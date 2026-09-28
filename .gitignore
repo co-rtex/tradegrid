@@ -1,0 +1,38 @@
+# macOS
+.DS_Store
+
+# Editors
+.vscode/
+.idea/
+
+# Environment files
+.env
+.env.*
+!.env.example
+
+# Node / frontend
+node_modules/
+dist/
+build/
+.next/
+coverage/
+
+# Go
+bin/
+*.test
+*.out
+
+# Python
+__pycache__/
+*.py[cod]
+.venv/
+venv/
+.pytest_cache/
+
+# Logs
+*.log
+
+# Local data
+*.db
+*.sqlite
+tmp/

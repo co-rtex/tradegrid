@@ -1,0 +1,26 @@
+.app-shell {
+  max-width: 64rem;
+  margin: 0 auto;
+  padding: clamp(3rem, 10vw, 8rem) 1.5rem;
+}
+
+.app-community {
+  color: #38bdf8;
+  font-weight: 600;
+}
+
+.app-shell h1 {
+  margin: 1rem 0;
+  font-size: clamp(2.5rem, 8vw, 4.5rem);
+  line-height: 1.1;
+  letter-spacing: -0.04em;
+}
+
+.app-description {
+  font-size: 1.25rem;
+}
+
+.app-status {
+  margin-top: 2rem;
+  color: #94a3b8;
+}

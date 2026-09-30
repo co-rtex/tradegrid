@@ -35,6 +35,8 @@ Performs pre-trade checks such as valid quantity, price, symbol, and available b
 ### Matching
 Matches compatible buy and sell orders using price-time priority.
 
+See [Matching Engine Behavior](matching-engine.md) for the limit-order rules, worked examples, and matching invariants.
+
 ### Executions
 Represents completed trades produced by the matching engine.
 

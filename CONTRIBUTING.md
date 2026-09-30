@@ -57,6 +57,12 @@ Before requesting review:
 - [ ] I can explain what my change does
 - [ ] I am ready for feedback
 
+## Continuous Integration
+
+Pull requests targeting `main` and pushes to `main` run backend formatting, vet,
+and test checks plus frontend lint, typecheck, and build checks through GitHub
+Actions. A PR should pass CI before merge.
+
 ## Reviews
 
 Reviews are collaborative. Comments are about improving the code, not judging the contributor.

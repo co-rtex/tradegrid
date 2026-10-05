@@ -4,7 +4,7 @@
 An instruction to buy or sell an asset under specified conditions.
 
 ## Limit Order
-An order that only exectures at the specified price or better
+An order that only exectures at the specified price or better.
 
 ## Buy (Bid)
 A request to purchase an asset at a given price.

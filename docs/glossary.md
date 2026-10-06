@@ -4,7 +4,7 @@
 An instruction to buy or sell an asset under specified conditions.
 
 ## Limit Order
-An order that only exectures at the specified price or better.
+An order that only executes at the specified price or better.
 
 ## Buy (Bid)
 A request to purchase an asset at a given price.
@@ -16,7 +16,7 @@ An offer to sell an asset at a given price.
 A list of active buy and sell orders organized by price.
 
 ## Execution (Fill)
-The completion of an order when it matches another order.
+A trade that occurs when a buy order and sell order match. An order may be partially or fully filled.
 
 ## Position
 The amount of an asset that a trader currently owns or owes.

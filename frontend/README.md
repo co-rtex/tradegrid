@@ -62,20 +62,24 @@ npm run preview
 Open the URL printed in the terminal (usually `http://localhost:4173`). Stop it
 with **Ctrl+C**. This is a local preview, not a production hosting service.
 
-There is no automated test suite yet. For this scaffold, run the checks above
-and verify that the TradeGrid heading renders in your browser. Tests can be added
-alongside future interactive features.
+There is no automated test suite yet. Run the checks above and verify that each
+navigation item updates the active highlight and page heading. Tab through the
+wordmark and navigation buttons and use Enter or Space to activate them.
 
 ## Directory structure
 
 ```text
 frontend/
   docs/app-shell.png Screenshot of the initial shell for review
+  docs/top-navigation.png Desktop navigation screenshot for issue #10
   src/
     main.tsx         Mounts React into the HTML page
     App.tsx          Minimal app shell; compose future components here
     App.css          App shell styles
     index.css        Global styles and basic browser defaults
+    components/
+      TopNavigation.tsx Reusable top navigation and its props
+      TopNavigation.css Navigation styles and responsive layout
   index.html         HTML entry point and page title
   package.json       Dependencies and npm commands
   package-lock.json  Locked dependency versions; commit dependency updates
@@ -90,10 +94,28 @@ Create `src/components/` when adding the first reusable component, and keep its
 CSS beside it. Import components into `App.tsx` to compose the interface. Use
 `index.css` for global styles and `App.css` for the shell layout.
 
-Issue #10 owns the top navigation component, and #11 owns the portfolio
-empty-state card. Neither is included here; contributors can replace or extend
-the landing content as those features arrive. Design-token documentation belongs
-to #15. The current plain CSS is only enough to establish basic branding.
+The top navigation from issue #10 is composed into the app shell. Issue #11 owns
+the portfolio empty-state card; contributors can replace or extend the landing
+content as those features arrive. Design-token documentation belongs to #15.
+
+### Reusing the navigation
+
+`TopNavigation` is controlled by its parent. Pass `activeItem` (Dashboard,
+Portfolio, Orders, or Markets), an `onNavigate` callback, and optionally a formatted
+`balance` string. The balance defaults to an em dash until data is available.
+
+```tsx
+<TopNavigation
+  activeItem={activeItem}
+  onNavigate={setActiveItem}
+  balance="$100,000.00"
+/>
+```
+
+The app shell demonstrates local state changes; page content and URL routing can
+be connected in later issues. The active button exposes `aria-current="page"`,
+and the wordmark returns to Dashboard. Below 768px the navigation wraps to a
+second row, with horizontal scrolling if its items exceed the available width.
 
 Routing, state-management libraries, trading screens, and backend connections
 are left for later issues.

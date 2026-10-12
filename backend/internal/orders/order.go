@@ -440,6 +440,15 @@ func (o Order) validateStatusAgainstQuantities() error {
 			return fmt.Errorf("%w: status %s requires no remaining quantity, got %d",
 				ErrInvalidStatus, o.Status, o.Remaining)
 		}
+	case StatusCanceled:
+		// Cancellation withdraws quantity that had not traded, so there must be
+		// some. A fully filled order has nothing left to withdraw and reaches
+		// FILLED instead; Cancel enforces this, but Validate also gates orders
+		// that were deserialized or built field by field.
+		if o.Remaining <= 0 {
+			return fmt.Errorf("%w: status %s requires positive remaining quantity, got %d of %d",
+				ErrInvalidStatus, o.Status, o.Remaining, o.Quantity)
+		}
 	}
 	return nil
 }

@@ -226,6 +226,7 @@ func TestValidateCatchesImpossibleStates(t *testing.T) {
 		{"partial with nothing filled", func(o *Order) { o.Status = StatusPartiallyFilled }, ErrInvalidStatus},
 		{"partial fully filled", func(o *Order) { o.Status = StatusPartiallyFilled; o.Remaining = 0 }, ErrInvalidStatus},
 		{"rejected with fills", func(o *Order) { o.Status = StatusRejected; o.Remaining = 5 }, ErrInvalidStatus},
+		{"canceled fully filled", func(o *Order) { o.Status = StatusCanceled; o.Remaining = 0 }, ErrInvalidStatus},
 		{"unknown status", func(o *Order) { o.Status = Status(99) }, ErrInvalidStatus},
 	}
 
@@ -238,6 +239,85 @@ func TestValidateCatchesImpossibleStates(t *testing.T) {
 			}
 		})
 	}
+}
+
+// TestCanceledRequiresRemainingQuantity covers the validation gap found in
+// review on #6: CANCELED had no quantity rule, so an order claiming to be
+// canceled while fully filled passed Validate. Cancellation withdraws quantity
+// that has not traded, so a canceled order must have some left.
+func TestCanceledRequiresRemainingQuantity(t *testing.T) {
+	t.Run("fully filled is rejected", func(t *testing.T) {
+		o := mustNew(t, validParams())
+		o.Status = StatusCanceled
+		o.Remaining = 0
+
+		if err := o.Validate(); !errors.Is(err, ErrInvalidStatus) {
+			t.Fatalf("Validate() = %v, want %v", err, ErrInvalidStatus)
+		}
+	})
+
+	// Cancellation with no fills and with partial fills both stay valid.
+	t.Run("no fills is valid", func(t *testing.T) {
+		o := mustNew(t, validParams())
+		if err := o.Cancel(t1); err != nil {
+			t.Fatalf("Cancel returned error: %v", err)
+		}
+		if o.Remaining != o.Quantity {
+			t.Fatalf("Remaining = %d, want %d", o.Remaining, o.Quantity)
+		}
+		if err := o.Validate(); err != nil {
+			t.Errorf("Validate() on a canceled unfilled order = %v, want nil", err)
+		}
+	})
+
+	t.Run("partial fill is valid", func(t *testing.T) {
+		o := mustNew(t, validParams())
+		if err := o.Fill(4, t1); err != nil {
+			t.Fatalf("Fill returned error: %v", err)
+		}
+		if err := o.Cancel(t2); err != nil {
+			t.Fatalf("Cancel returned error: %v", err)
+		}
+		if o.Remaining != 6 || o.Filled() != 4 {
+			t.Fatalf("remaining %d, filled %d; want 6, 4", o.Remaining, o.Filled())
+		}
+		if err := o.Validate(); err != nil {
+			t.Errorf("Validate() on a canceled partially filled order = %v, want nil", err)
+		}
+	})
+
+	// The lifecycle must not be able to reach the rejected state on its own:
+	// a fully filled order is no longer open, so Cancel refuses it.
+	t.Run("cancel after full fill is refused", func(t *testing.T) {
+		o := mustNew(t, validParams())
+		if err := o.Fill(o.Quantity, t1); err != nil {
+			t.Fatalf("Fill returned error: %v", err)
+		}
+		before := o
+
+		if err := o.Cancel(t2); !errors.Is(err, ErrNotOpen) {
+			t.Fatalf("Cancel() on a filled order = %v, want %v", err, ErrNotOpen)
+		}
+		if o != before {
+			t.Errorf("order changed on a refused cancel:\n got %+v\nwant %+v", o, before)
+		}
+	})
+
+	// A canceled order that was fully filled must not survive a round trip
+	// either, since JSON is the other way an order enters the system.
+	t.Run("rejected on json decode", func(t *testing.T) {
+		raw := `{"id":"O-1","userId":"U-1","symbol":"AAPL","side":"BUY","type":"LIMIT",` +
+			`"price":19900,"quantity":10,"remaining":0,"status":"CANCELED",` +
+			`"createdAt":"2026-10-11T14:30:00Z","updatedAt":"2026-10-11T14:31:00Z"}`
+
+		var o Order
+		if err := json.Unmarshal([]byte(raw), &o); err != nil {
+			t.Fatalf("Unmarshal returned error: %v", err)
+		}
+		if err := o.Validate(); !errors.Is(err, ErrInvalidStatus) {
+			t.Errorf("Validate() after decode = %v, want %v", err, ErrInvalidStatus)
+		}
+	})
 }
 
 func TestZeroOrderIsInvalid(t *testing.T) {

@@ -61,7 +61,7 @@ The first matching engine accepts limit orders only; market orders are explicitl
 | `StatusNew` | `NEW` | Accepted, nothing filled yet. Resting on the book or about to be matched. |
 | `StatusPartiallyFilled` | `PARTIALLY_FILLED` | At least one fill, with positive remaining quantity. |
 | `StatusFilled` | `FILLED` | The entire quantity has traded. |
-| `StatusCanceled` | `CANCELED` | Withdrawn before the remaining quantity traded. |
+| `StatusCanceled` | `CANCELED` | Withdrawn before the remaining quantity traded. Requires positive remaining quantity. |
 | `StatusRejected` | `REJECTED` | Refused by validation or risk. Never traded, never rested. |
 
 `FILLED`, `CANCELED`, and `REJECTED` are terminal: no transition leaves them. `NEW` and `PARTIALLY_FILLED` are open, meaning the remaining quantity can still trade.
@@ -93,7 +93,7 @@ Both `NEW` and `PARTIALLY_FILLED` can be canceled.
 Three rules govern every transition:
 
 1. **A fill only reduces remaining quantity.** It never changes `Quantity`. A fill larger than `Remaining` is an error, and the order is left untouched rather than partially updated.
-2. **Cancellation keeps the fills that already happened.** A partially filled order that is canceled stops working but keeps its filled quantity; it does not revert.
+2. **Cancellation keeps the fills that already happened.** A partially filled order that is canceled stops working but keeps its filled quantity; it does not revert. Cancellation withdraws quantity that has not traded, so there has to be some: a fully filled order has nothing left to withdraw and is `FILLED`, not `CANCELED`.
 3. **Rejection applies only before trading.** An order that has received any fill cannot be rejected, because the counterparty to that fill has already traded.
 
 Transitions take the timestamp as an argument rather than reading the clock. The matching engine specification requires deterministic replays, and hidden calls to the system clock would make the same input sequence produce different records on each run.
@@ -115,9 +115,10 @@ These hold for any order that passes validation:
 7. `NEW` and `REJECTED` imply `Remaining = Quantity`.
 8. `PARTIALLY_FILLED` implies `0 < Remaining < Quantity`.
 9. `FILLED` implies `Remaining = 0`.
-10. `CreatedAt` and `UpdatedAt` are set, and `UpdatedAt` moves only when the order changes.
+10. `CANCELED` implies `Remaining > 0`.
+11. `CreatedAt` and `UpdatedAt` are set, and `UpdatedAt` moves only when the order changes.
 
-Invariants 7 through 9 are worth stating separately from the field rules: they are the combinations that make a status meaningful. Without them, a record could claim `FILLED` while still offering quantity to the book, and nothing downstream could tell which half to believe.
+Invariants 7 through 10 are worth stating separately from the field rules: they are the combinations that make a status meaningful. Without them, a record could claim `FILLED` while still offering quantity to the book, and nothing downstream could tell which half to believe.
 
 ## Out of Scope
 

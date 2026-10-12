@@ -104,13 +104,7 @@ content as those features arrive. Design-token documentation belongs to #15.
 Portfolio, Orders, or Markets), an `onNavigate` callback, and optionally a formatted
 `balance` string. The balance defaults to an em dash until data is available.
 
-```tsx
-<TopNavigation
-  activeItem={activeItem}
-  onNavigate={setActiveItem}
-  balance="$100,000.00"
-/>
-```
+
 
 The app shell demonstrates local state changes; page content and URL routing can
 be connected in later issues. The active button exposes `aria-current="page"`,

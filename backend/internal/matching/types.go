@@ -50,6 +50,7 @@ type Execution struct {
 type Result struct {
 	// Err is the validation error for a rejected order. Rejected orders produce
 	// no executions or remaining quantity and do not change the book.
+	// Check Err before interpreting Remaining: zero also occurs on a full fill.
 	Err error
 	// Executions in the order they occurred.
 	Executions []Execution

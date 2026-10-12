@@ -8,6 +8,7 @@ import (
 )
 
 func TestValidateQuantity(t *testing.T) {
+	// Include both int64 extremes to catch overflow-prone validation logic.
 	tests := []struct {
 		name     string
 		quantity int64
@@ -43,11 +44,15 @@ func TestValidateQuantity(t *testing.T) {
 }
 
 func TestSubmitRejectsInvalidQuantity(t *testing.T) {
+	// Exercise both sides and both an existing and an unseen symbol. Rejection
+	// must preserve resting orders and must not create a book for the new symbol.
 	for _, side := range []Side{Buy, Sell} {
 		for _, quantity := range []int64{0, -1, math.MinInt64} {
 			for _, symbol := range []string{"AAPL", "NEW"} {
 				o := Order{ID: "invalid", Symbol: symbol, Side: side, Price: 100, Quantity: quantity}
 				bk := NewBook()
+				// These prices do not cross, so both orders remain available for
+				// checking that a rejected submission leaves the book unchanged.
 				bk.Submit(Order{ID: "bid", Symbol: "AAPL", Side: Buy, Price: 100, Quantity: 5})
 				bk.Submit(Order{ID: "ask", Symbol: "AAPL", Side: Sell, Price: 101, Quantity: 5})
 				bids, asks := bk.Bids("AAPL"), bk.Asks("AAPL")
@@ -64,6 +69,8 @@ func TestSubmitRejectsInvalidQuantity(t *testing.T) {
 }
 
 func TestSubmitAcceptsPositiveQuantity(t *testing.T) {
+	// With no opposite-side orders, every valid quantity should rest in full
+	// on its own side, including the largest quantity the model can represent.
 	for _, side := range []Side{Buy, Sell} {
 		for _, quantity := range []int64{1, 100, math.MaxInt64} {
 			bk := NewBook()

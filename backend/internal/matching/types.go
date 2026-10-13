@@ -23,8 +23,10 @@ func (s Side) String() string {
 
 // Order is an accepted limit order handed to the matching engine.
 //
-// TODO(#6): Replace or align with the shared Order domain model once issue #6
-// is merged. Only the fields the matching spec needs are defined here.
+// TODO: Replace or align with the shared Order domain model in
+// internal/orders (see docs/order-model.md). Only the fields the matching spec
+// needs are defined here; aligning the two is deliberately a separate change
+// so that matching behavior and the model land independently.
 //
 // TODO: Numeric representation is out of scope for the matching spec. Prices
 // are integer cents and quantities are whole shares until a decision is made.

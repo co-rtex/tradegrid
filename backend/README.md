@@ -49,9 +49,9 @@ go test ./...
 
 `go fmt` formats the code, `go vet` checks for common mistakes, and `go test`
 builds the packages and runs their tests. The `./...` pattern includes all
-packages under the current directory. There are no tests yet, so `go test`
-currently reports `[no test files]`. Add tests in files ending in `_test.go`
-alongside the code they exercise as features are introduced.
+packages under the current directory. Packages without tests report
+`[no test files]`. Add tests in files ending in `_test.go` alongside the code
+they exercise as features are introduced.
 
 ## Directory structure
 
@@ -61,15 +61,18 @@ backend/
   cmd/
     server/
       main.go         Executable entry point
+  internal/
+    matching/         Limit-order matching engine
+    orders/           Order domain model
   README.md           Backend development instructions
 ```
 
 Keep `cmd/server/main.go` focused on starting the application. Create packages
 under `backend/internal/` as backend functionality is added; Go keeps packages
-in that directory private to this backend module. The directory is not needed
-until the first package exists.
+in that directory private to this backend module.
 
-Issue #5 will add the HTTP health endpoint and server startup. Issue #6 will
-define the Order model, which can live in a package under `internal/`.
+The Order domain model lives in `internal/orders`; see
+[Order Domain Model](../docs/order-model.md) for its fields, enumerations, and
+lifecycle. Issue #5 will add the HTTP health endpoint and server startup.
 Exchange features, persistence, and real-time communication are left to their
 respective contributor issues.

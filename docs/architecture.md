@@ -29,6 +29,8 @@ Live UI Update
 ### Orders
 Receives, validates, tracks, and cancels orders.
 
+See [Order Domain Model](order-model.md) for the order fields, the closed Side/Type/Status enumerations, and the lifecycle transitions.
+
 ### Risk
 Performs pre-trade checks such as valid quantity, price, symbol, and available buying power.
 

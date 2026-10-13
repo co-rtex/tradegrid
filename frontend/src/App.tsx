@@ -1,4 +1,5 @@
 import './App.css'
+import PortfolioSummary from './components/PortfolioSummary'
 
 function App() {
   return (
@@ -9,6 +10,7 @@ function App() {
         A student-built simulated trading platform.
       </p>
       <p className="app-status">Built together. One contribution at a time.</p>
+      <PortfolioSummary />
     </main>
   )
 }

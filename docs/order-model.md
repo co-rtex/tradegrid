@@ -131,4 +131,4 @@ This document defines the shape and lifecycle of an order. It does not define:
 - Order amendment, and the effect of cancellation on resting orders inside the matching engine.
 - Persistence, including the table layout in [issue #12](https://github.com/co-rtex/tradegrid/issues/12).
 
-Do not infer any of these from the model. The matching engine currently defines its own minimal order struct in `backend/internal/matching`; aligning it with this model is a follow-up, and the engine's behavior is unchanged by this document.
+Do not infer any of these from the model. The matching engine keeps a minimal order struct in `backend/internal/matching` and shares this model's `Side`; `matching.FromOrder` converts a NEW limit order into it and rejects market orders. The engine's behavior is unchanged by this document.

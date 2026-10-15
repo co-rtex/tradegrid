@@ -56,7 +56,7 @@
 }
 
 .navigation-item[aria-current='page'] {
-  border-color: #285780;
+  border-color: #7dd3fc;
   background: #173653;
   color: #7dd3fc;
 }
@@ -99,7 +99,7 @@
     order: 1;
     width: 100%;
     overflow-x: auto;
-    padding: 0.25rem;
+    padding: 0.5rem;
   }
 
   .navigation-items {

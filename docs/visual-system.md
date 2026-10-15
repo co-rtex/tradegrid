@@ -277,7 +277,7 @@ If Inter is not available, the system font should be used.
 
 ### Type Scale
 
- **Usage**             | **Size** | **Weight** |
+ **Usage**              | **Size** | **Weight** |
 | --------------------- | -------- | ---------- |
 | Page title            | `28px`   | 700        |
 | Section heading       | `20px`   | 600        |
@@ -337,7 +337,7 @@ Use for general actions such as:
 
 ```text
 Background: #22C55E
-Text: #F8FAFC
+Text: #0B1120
 ```
 
 Green is used because the action represents a buy.
@@ -346,7 +346,7 @@ Green is used because the action represents a buy.
 
 ```text
 Background: #EF4444
-Text: #F8FAFC
+Text: #0B1120
 ```
 
 Red is used because the action represents a sell.

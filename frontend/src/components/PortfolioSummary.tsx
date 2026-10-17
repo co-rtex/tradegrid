@@ -23,8 +23,9 @@ function PortfolioSummary() {
           <p className="portfolio-value">{currency.format(portfolio.totalValue)}</p>
         </div>
         <svg className="portfolio-chart" viewBox="0 0 240 100" aria-hidden="true" focusable="false">
-          <path className="portfolio-chart-fill" d="M4 88 C34 88 38 68 66 72 S106 46 132 51 S174 25 196 30 S222 12 236 8 V100 H4 Z" />
-          <path className="portfolio-chart-line" d="M4 88 C34 88 38 68 66 72 S106 46 132 51 S174 25 196 30 S222 12 236 8" />
+          {/* Flat while P&L is zero; a performance curve needs historical values. */}
+          <path className="portfolio-chart-fill" d="M4 50 H236 V100 H4 Z" />
+          <path className="portfolio-chart-line" d="M4 50 H236" />
         </svg>
       </div>
 

@@ -29,6 +29,8 @@ Live UI Update
 ### Orders
 Receives, validates, tracks, and cancels orders.
 
+See [Order Input Validation](order-validation.md) for the initial validation rules for the LIMIT-order MVP.
+
 ### Risk
 Performs pre-trade checks such as valid quantity, price, symbol, and available buying power.
 

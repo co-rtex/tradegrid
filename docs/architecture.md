@@ -51,6 +51,10 @@ Publishes order-book and execution updates to clients.
 ### Storage
 Persists accounts, orders, executions, positions, and related state.
 
+## Sprint 2 Contract
+
+See [Sprint 2 API and Exchange Contract](api.md) for the REST endpoints, JSON shapes, error codes, numeric bounds, demo accounts, reservation and settlement rules, and the shared [fixtures](fixtures/).
+
 ## Architectural Principle
 
 Start simple and modular. We will not introduce distributed infrastructure merely to make the architecture look more complex. New services should solve a demonstrated problem.

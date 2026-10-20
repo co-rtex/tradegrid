@@ -1,0 +1,173 @@
+{
+  "name": "full fill with price improvement",
+  "description": "Bob buys 10 AAPL at $191.00 against Alice's resting sell. Both orders fill at $190.00 (the resting price); Bob reserved $1,910.00, pays $1,900.00, and the $10.00 difference returns to his available cash.",
+  "setup": [
+    {
+      "method": "POST",
+      "path": "/api/v1/orders",
+      "body": {
+        "userId": "alice",
+        "symbol": "AAPL",
+        "side": "SELL",
+        "type": "LIMIT",
+        "price": 19000,
+        "quantity": 10
+      }
+    }
+  ],
+  "request": {
+    "method": "POST",
+    "path": "/api/v1/orders",
+    "body": {
+      "userId": "bob",
+      "symbol": "AAPL",
+      "side": "BUY",
+      "type": "LIMIT",
+      "price": 19100,
+      "quantity": 10
+    }
+  },
+  "response": {
+    "status": 201,
+    "body": {
+      "order": {
+        "id": "ord-2",
+        "userId": "bob",
+        "symbol": "AAPL",
+        "side": "BUY",
+        "type": "LIMIT",
+        "price": 19100,
+        "quantity": 10,
+        "remaining": 0,
+        "status": "FILLED",
+        "sequence": 2,
+        "createdAt": "2026-10-20T15:00:02Z",
+        "updatedAt": "2026-10-20T15:00:02Z"
+      },
+      "executions": [
+        {
+          "id": "exe-1",
+          "sequence": 1,
+          "executedAt": "2026-10-20T15:00:02Z",
+          "symbol": "AAPL",
+          "price": 19000,
+          "quantity": 10,
+          "buyOrderId": "ord-2",
+          "sellOrderId": "ord-1",
+          "buyerUserId": "bob",
+          "sellerUserId": "alice"
+        }
+      ]
+    }
+  },
+  "after": {
+    "GET /api/v1/accounts": {
+      "accounts": [
+        {
+          "userId": "alice",
+          "displayName": "Alice (demo)",
+          "cash": {
+            "total": 10190000,
+            "reserved": 0,
+            "available": 10190000
+          },
+          "positions": [
+            {
+              "symbol": "AAPL",
+              "total": 90,
+              "reserved": 0,
+              "available": 90
+            },
+            {
+              "symbol": "MSFT",
+              "total": 100,
+              "reserved": 0,
+              "available": 100
+            }
+          ]
+        },
+        {
+          "userId": "bob",
+          "displayName": "Bob (demo)",
+          "cash": {
+            "total": 9810000,
+            "reserved": 0,
+            "available": 9810000
+          },
+          "positions": [
+            {
+              "symbol": "AAPL",
+              "total": 110,
+              "reserved": 0,
+              "available": 110
+            },
+            {
+              "symbol": "MSFT",
+              "total": 100,
+              "reserved": 0,
+              "available": 100
+            }
+          ]
+        }
+      ]
+    },
+    "GET /api/v1/orderbook?symbol=AAPL": {
+      "symbol": "AAPL",
+      "asOfSequence": 2,
+      "bids": [],
+      "asks": []
+    },
+    "GET /api/v1/orders?userId=alice": {
+      "orders": [
+        {
+          "id": "ord-1",
+          "userId": "alice",
+          "symbol": "AAPL",
+          "side": "SELL",
+          "type": "LIMIT",
+          "price": 19000,
+          "quantity": 10,
+          "remaining": 0,
+          "status": "FILLED",
+          "sequence": 1,
+          "createdAt": "2026-10-20T15:00:01Z",
+          "updatedAt": "2026-10-20T15:00:02Z"
+        }
+      ]
+    },
+    "GET /api/v1/orders?userId=bob": {
+      "orders": [
+        {
+          "id": "ord-2",
+          "userId": "bob",
+          "symbol": "AAPL",
+          "side": "BUY",
+          "type": "LIMIT",
+          "price": 19100,
+          "quantity": 10,
+          "remaining": 0,
+          "status": "FILLED",
+          "sequence": 2,
+          "createdAt": "2026-10-20T15:00:02Z",
+          "updatedAt": "2026-10-20T15:00:02Z"
+        }
+      ]
+    },
+    "GET /api/v1/executions?symbol=AAPL": {
+      "executions": [
+        {
+          "id": "exe-1",
+          "sequence": 1,
+          "executedAt": "2026-10-20T15:00:02Z",
+          "symbol": "AAPL",
+          "price": 19000,
+          "quantity": 10,
+          "buyOrderId": "ord-2",
+          "sellOrderId": "ord-1",
+          "buyerUserId": "bob",
+          "sellerUserId": "alice"
+        }
+      ]
+    }
+  }
+}

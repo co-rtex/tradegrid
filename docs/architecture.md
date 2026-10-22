@@ -29,6 +29,7 @@ Live UI Update
 ### Orders
 Receives, validates, tracks, and cancels orders.
 
+See [Order Input Validation](order-validation.md) for the initial validation rules for the LIMIT-order MVP.
 See [Order Domain Model](order-model.md) for the order fields, the closed Side/Type/Status enumerations, and the lifecycle transitions.
 
 ### Risk

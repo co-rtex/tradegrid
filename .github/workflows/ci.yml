@@ -34,6 +34,19 @@ jobs:
       - name: Test
         run: go test ./...
 
+  database:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - name: Start PostgreSQL
+        run: docker compose up -d --wait postgres
+      - name: Check migrations
+        run: backend/db/migrate status
+      - name: Apply migrations
+        run: backend/db/migrate up
+      - name: Test the migration tool
+        run: backend/db/test-migrate
+
   frontend:
     runs-on: ubuntu-latest
     defaults:

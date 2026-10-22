@@ -1,0 +1,146 @@
+#!/bin/sh
+# Self-test for backend/db/migrate.
+#
+# Starts the compose PostgreSQL service if needed, then exercises the runner
+# against a disposable database (tradegrid_migrate_selftest_test) and
+# temporary migration files. The tradegrid database and the real
+# backend/db/migrations directory are never touched.
+set -eu
+
+ROOT=$(CDPATH= cd -- "$(dirname -- "$0")/../.." && pwd)
+MIGRATE="$ROOT/backend/db/migrate"
+TEST_DB=tradegrid_migrate_selftest_test
+TMP=$(mktemp -d)
+BAK=$(mktemp -d)
+export TRADEGRID_DB_NAME=$TEST_DB
+export TRADEGRID_MIGRATIONS_DIR=$TMP
+
+cleanup() {
+	"$MIGRATE" drop-test-db "$TEST_DB" >/dev/null 2>&1 || true
+	rm -rf "$TMP" "$BAK"
+}
+trap cleanup EXIT
+
+fail() {
+	echo "FAIL: $*" >&2
+	exit 1
+}
+pass() { echo "ok: $*"; }
+
+query() {
+	docker compose -f "$ROOT/compose.yaml" exec -T postgres \
+		sh -c 'db=$1; shift; exec psql -X -q -At -v ON_ERROR_STOP=1 -U "$POSTGRES_USER" -d "$db" "$@"' psql "$TEST_DB" -c "$1"
+}
+
+reset_db() {
+	"$MIGRATE" drop-test-db "$TEST_DB" >/dev/null
+	"$MIGRATE" create-test-db "$TEST_DB" >/dev/null
+	rm -f "$TMP"/*.sql
+}
+
+docker compose -f "$ROOT/compose.yaml" up -d --wait postgres >/dev/null
+reset_db
+
+# Migrations apply in version order, exactly once.
+cat >"$TMP/0002_add_label.sql" <<'SQL'
+-- Function bodies may contain BEGIN/END; only top-level transaction control
+-- is rejected.
+ALTER TABLE selftest_widgets ADD COLUMN label text NOT NULL DEFAULT 'none';
+CREATE FUNCTION selftest_label(w selftest_widgets) RETURNS text
+LANGUAGE plpgsql AS $$
+BEGIN
+	RETURN upper(w.label);
+END;
+$$;
+SQL
+cat >"$TMP/0001_create_widgets.sql" <<'SQL'
+CREATE TABLE selftest_widgets (id integer PRIMARY KEY);
+INSERT INTO selftest_widgets (id) VALUES (1);
+SQL
+"$MIGRATE" up >/dev/null || fail "first up"
+[ "$(query "SELECT string_agg(version, ',' ORDER BY applied_at, version) FROM schema_migrations")" = "0001,0002" ] ||
+	fail "versions not recorded in order"
+pass "applies pending migrations in version order"
+
+out=$("$MIGRATE" up) || fail "second up"
+echo "$out" | grep -q "ran 0 pending" || fail "rerun applied something: $out"
+[ "$(query "SELECT count(*) FROM selftest_widgets")" = 1 ] || fail "rerun duplicated data"
+[ "$(query "SELECT selftest_label(w) FROM selftest_widgets w")" = NONE ] || fail "function migration"
+pass "rerunning up is a no-op"
+
+out=$("$MIGRATE" status) || fail "status on clean history"
+echo "$out" | grep -q "^applied   0001_create_widgets.sql" || fail "status: $out"
+pass "status reports applied migrations"
+
+# A failing migration reports failure and leaves nothing behind.
+cat >"$TMP/0003_broken.sql" <<'SQL'
+CREATE TABLE selftest_broken (id integer);
+SELECT 1 / 0;
+SQL
+if "$MIGRATE" up >/dev/null 2>&1; then fail "broken migration reported success"; fi
+[ "$(query "SELECT to_regclass('selftest_broken') IS NULL")" = t ] || fail "broken migration left a table"
+[ "$(query "SELECT count(*) FROM schema_migrations WHERE version = '0003'")" = 0 ] || fail "broken migration recorded"
+"$MIGRATE" status | grep -q "^pending   0003_broken.sql" || fail "broken migration not pending"
+pass "failed migration exits non-zero, rolls back, and stays pending"
+
+# A migration that ends the runner's transaction is reported as failed.
+rm "$TMP/0003_broken.sql"
+cat >"$TMP/0003_commits.sql" <<'SQL'
+CREATE TABLE selftest_committed (id integer);
+COMMIT;
+SQL
+if "$MIGRATE" up >/dev/null 2>&1; then fail "self-committing migration reported success"; fi
+[ "$(query "SELECT count(*) FROM schema_migrations WHERE version = '0003'")" = 0 ] || fail "self-committing migration recorded"
+pass "migration containing COMMIT is rejected and not recorded"
+
+# History must match the files.
+rm "$TMP/0003_commits.sql"
+cp "$TMP/0001_create_widgets.sql" "$BAK/0001.sql"
+echo "-- edited" >>"$TMP/0001_create_widgets.sql"
+if "$MIGRATE" status >/dev/null 2>&1; then fail "status ignored a modified migration"; fi
+"$MIGRATE" status 2>/dev/null | grep -q "^MODIFIED  0001_create_widgets.sql" || fail "status did not flag MODIFIED"
+if "$MIGRATE" up >/dev/null 2>&1; then fail "up ran with a modified migration"; fi
+mv "$BAK/0001.sql" "$TMP/0001_create_widgets.sql"
+pass "modified applied migrations block status and up"
+
+mv "$TMP/0002_add_label.sql" "$BAK/0002.sql"
+if "$MIGRATE" up >/dev/null 2>&1; then fail "up ran with a missing migration"; fi
+"$MIGRATE" status 2>/dev/null | grep -q "^MISSING   0002_add_label.sql" || fail "status did not flag MISSING"
+mv "$BAK/0002.sql" "$TMP/0002_add_label.sql"
+pass "missing applied migrations block status and up"
+
+# Versions cannot be applied out of order or reused, and names are checked.
+echo "SELECT 1;" >"$TMP/0000_late.sql"
+if "$MIGRATE" up >/dev/null 2>&1; then fail "applied a version older than the latest"; fi
+rm "$TMP/0000_late.sql"
+echo "SELECT 1;" >"$TMP/0002_duplicate.sql"
+if "$MIGRATE" up >/dev/null 2>&1; then fail "accepted a reused version"; fi
+rm "$TMP/0002_duplicate.sql"
+echo "SELECT 1;" >"$TMP/4_Bad-Name.sql"
+if "$MIGRATE" up >/dev/null 2>&1; then fail "accepted a bad file name"; fi
+rm "$TMP/4_Bad-Name.sql"
+"$MIGRATE" status >/dev/null || fail "status after restoring files"
+pass "rejects out-of-order versions, reused versions, and bad names"
+
+# Concurrent runs apply a migration once and both succeed.
+reset_db
+cat >"$TMP/0001_slow.sql" <<'SQL'
+SELECT pg_sleep(1);
+CREATE TABLE selftest_slow (id integer);
+SQL
+"$MIGRATE" up >"$BAK/a.log" 2>&1 &
+a=$!
+"$MIGRATE" up >"$BAK/b.log" 2>&1 &
+b=$!
+wait $a || fail "concurrent run A: $(cat "$BAK/a.log")"
+wait $b || fail "concurrent run B: $(cat "$BAK/b.log")"
+[ "$(query "SELECT count(*) FROM schema_migrations")" = 1 ] || fail "concurrent runs recorded twice"
+pass "concurrent runs apply each migration once"
+
+# Destructive commands only accept isolated _test databases.
+for name in tradegrid postgres tradegrid_test_db Tradegrid_test; do
+	if "$MIGRATE" drop-test-db "$name" >/dev/null 2>&1; then fail "drop-test-db accepted $name"; fi
+done
+pass "drop-test-db refuses databases not named *_test"
+
+echo "all migration self-tests passed"

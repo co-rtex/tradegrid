@@ -1,0 +1,210 @@
+#!/bin/sh
+# Apply and inspect TradeGrid's versioned SQL migrations.
+#
+# Usage: backend/db/migrate <command> [args]
+#
+#   up                   Apply pending migrations in version order.
+#   status               List applied, pending, modified, and missing migrations.
+#   create-test-db NAME  Create an empty database named NAME (must end in _test).
+#   drop-test-db NAME    Drop the database named NAME (must end in _test).
+#
+# Environment:
+#   TRADEGRID_DB_NAME         Target database for up/status. Defaults to the
+#                             container's POSTGRES_DB (tradegrid).
+#   TRADEGRID_MIGRATIONS_DIR  Directory of migration files. Defaults to
+#                             backend/db/migrations.
+#
+# psql runs inside the compose "postgres" service, so no PostgreSQL client is
+# needed on the host. See backend/db/README.md.
+set -eu
+
+ROOT=$(CDPATH= cd -- "$(dirname -- "$0")/../.." && pwd)
+MIGRATIONS_DIR=${TRADEGRID_MIGRATIONS_DIR:-$ROOT/backend/db/migrations}
+DB=${TRADEGRID_DB_NAME:-}
+
+die() {
+	echo "migrate: $*" >&2
+	exit 1
+}
+
+# run_psql DATABASE [psql args...] reads SQL from stdin. An empty DATABASE
+# means the container's POSTGRES_DB. Any SQL error stops psql with a non-zero
+# exit status.
+run_psql() {
+	target=$1
+	shift
+	docker compose -f "$ROOT/compose.yaml" exec -T -e TG_DB="$target" postgres \
+		sh -c 'exec psql -X -q -v ON_ERROR_STOP=1 -U "$POSTGRES_USER" -d "${TG_DB:-$POSTGRES_DB}" "$@"' psql "$@"
+}
+
+checksum() {
+	if command -v sha256sum >/dev/null 2>&1; then
+		sha256sum "$1" | cut -d ' ' -f 1
+	else
+		shasum -a 256 "$1" | cut -d ' ' -f 1
+	fi
+}
+
+# load_files sets FILES to the migration file names in version order. It runs
+# in the current shell, so a bad name or a reused version stops the script.
+load_files() {
+	[ -d "$MIGRATIONS_DIR" ] || die "no migrations directory: $MIGRATIONS_DIR"
+	FILES=
+	for path in "$MIGRATIONS_DIR"/*; do
+		[ -e "$path" ] || continue
+		f=${path##*/}
+		case $f in
+		.gitkeep | README.md) continue ;;
+		esac
+		echo "$f" | grep -Eq '^[0-9]{4}_[a-z0-9_]+\.sql$' ||
+			die "bad migration file name '$f' (want NNNN_lowercase_description.sql)"
+		FILES="$FILES$f
+"
+	done
+	FILES=$(printf '%s' "$FILES" | LC_ALL=C sort)
+	dup=$(printf '%s\n' "$FILES" | cut -c 1-4 | uniq -d)
+	[ -z "$dup" ] || die "more than one migration uses version $(echo "$dup" | head -n 1)"
+}
+
+# applied prints "version|name|checksum|applied_at" for each recorded
+# migration, or nothing when the tracking table does not exist yet.
+applied() {
+	exists=$(echo "SELECT to_regclass('public.schema_migrations') IS NOT NULL;" | run_psql "$DB" -At)
+	[ "$exists" = t ] || return 0
+	echo "SELECT version, name, checksum, to_char(applied_at AT TIME ZONE 'UTC', 'YYYY-MM-DD\"T\"HH24:MI:SS\"Z\"')
+	      FROM schema_migrations ORDER BY version;" | run_psql "$DB" -At -F '|'
+}
+
+ensure_table() {
+	run_psql "$DB" -o /dev/null <<'SQL'
+SET client_min_messages = warning;
+BEGIN;
+-- CREATE TABLE IF NOT EXISTS is not safe against a concurrent creator.
+SELECT pg_advisory_xact_lock(hashtext('tradegrid.migrate'));
+CREATE TABLE IF NOT EXISTS public.schema_migrations (
+	version    text        PRIMARY KEY CHECK (version ~ '^[0-9]{4}$'),
+	name       text        NOT NULL UNIQUE,
+	checksum   text        NOT NULL,
+	applied_at timestamptz NOT NULL DEFAULT now()
+);
+COMMIT;
+SQL
+}
+
+# verify compares recorded migrations with the files on disk. It fails when a
+# recorded migration's file was changed or removed, so history cannot drift.
+verify() {
+	recorded=$1
+	bad=0
+	while IFS='|' read -r version name sum _; do
+		[ -n "$version" ] || continue
+		if [ ! -f "$MIGRATIONS_DIR/$name" ]; then
+			echo "migrate: $name was applied but its file is missing" >&2
+			bad=1
+		elif [ "$(checksum "$MIGRATIONS_DIR/$name")" != "$sum" ]; then
+			echo "migrate: $name was modified after it was applied; add a new migration instead" >&2
+			bad=1
+		fi
+	done <<EOF
+$recorded
+EOF
+	return $bad
+}
+
+cmd_status() {
+	load_files
+	recorded=$(applied)
+	echo "database: ${DB:-default}"
+	for f in $FILES; do
+		row=$(printf '%s\n' "$recorded" | grep "^${f%%_*}|" || true)
+		if [ -z "$row" ]; then
+			echo "pending   $f"
+		elif [ "$(echo "$row" | cut -d '|' -f 3)" != "$(checksum "$MIGRATIONS_DIR/$f")" ]; then
+			echo "MODIFIED  $f"
+		else
+			echo "applied   $f  $(echo "$row" | cut -d '|' -f 4)"
+		fi
+	done
+	printf '%s\n' "$recorded" | while IFS='|' read -r version name _; do
+		if [ -n "$version" ] && [ ! -f "$MIGRATIONS_DIR/$name" ]; then
+			echo "MISSING   $name"
+		fi
+	done
+	verify "$recorded" 2>/dev/null
+}
+
+cmd_up() {
+	load_files
+	ensure_table
+	recorded=$(applied)
+	verify "$recorded" || die "refusing to apply migrations until history matches the files"
+	latest=$(printf '%s\n' "$recorded" | cut -d '|' -f 1 | sort | tail -n 1)
+
+	count=0
+	for f in $FILES; do
+		version=${f%%_*}
+		if printf '%s\n' "$recorded" | grep -q "^$version|"; then
+			continue
+		fi
+		if [ -n "$latest" ] && [ "$(printf '%s\n%s\n' "$version" "$latest" | LC_ALL=C sort | head -n 1)" = "$version" ]; then
+			die "$f is older than the latest applied version $latest; renumber it after $latest"
+		fi
+		sum=$(checksum "$MIGRATIONS_DIR/$f")
+		echo "applying  $f"
+		# One transaction per migration: its statements and its tracking row
+		# commit together or not at all. The advisory lock serializes concurrent
+		# runs; a run that waited re-checks the version and skips it. The
+		# transaction-local setting detects a migration that ends the
+		# transaction itself.
+		{
+			printf '%s\n' "BEGIN;"
+			printf '%s\n' "SELECT pg_advisory_xact_lock(hashtext('tradegrid.migrate'));"
+			printf '%s\n' "SELECT EXISTS (SELECT 1 FROM public.schema_migrations WHERE version = '$version') AS tg_done \\gset"
+			printf '%s\n' "\\if :tg_done"
+			printf '%s\n' "\\echo 'skipping  $f (applied by a concurrent run)'"
+			printf '%s\n' "ROLLBACK;"
+			printf '%s\n' "\\else"
+			printf '%s\n' "SELECT set_config('tradegrid.migration', '$f', true);"
+			cat "$MIGRATIONS_DIR/$f"
+			printf '\n'
+			printf '%s\n' ";"
+			printf '%s\n' "DO \$\$ BEGIN"
+			printf '%s\n' "  IF current_setting('tradegrid.migration', true) IS DISTINCT FROM '$f' THEN"
+			printf '%s\n' "    RAISE EXCEPTION 'migration $f must not COMMIT or ROLLBACK; the runner wraps it in a transaction';"
+			printf '%s\n' "  END IF;"
+			printf '%s\n' "END \$\$;"
+			printf '%s\n' "INSERT INTO public.schema_migrations (version, name, checksum) VALUES ('$version', '$f', '$sum');"
+			printf '%s\n' "COMMIT;"
+			printf '%s\n' "\\endif"
+		} | run_psql "$DB" -o /dev/null || die "$f failed; nothing from it was recorded"
+		count=$((count + 1))
+	done
+	echo "ran $count pending migration(s) on ${DB:-default}"
+}
+
+test_db_name() {
+	[ $# -eq 1 ] || die "usage: migrate $CMD NAME"
+	echo "$1" | grep -Eq '^[a-z][a-z0-9_]*_test$' ||
+		die "refusing '$1': test database names must be lowercase and end in _test"
+}
+
+CMD=${1:-}
+[ $# -gt 0 ] && shift
+case $CMD in
+up) cmd_up ;;
+status) cmd_status ;;
+create-test-db)
+	test_db_name "$@"
+	echo "CREATE DATABASE $1;" | run_psql postgres
+	echo "created $1"
+	;;
+drop-test-db)
+	test_db_name "$@"
+	printf "SET client_min_messages = warning;\nDROP DATABASE IF EXISTS %s WITH (FORCE);\n" "$1" | run_psql postgres
+	echo "dropped $1"
+	;;
+*)
+	sed -n '2,18p' "$0" | sed 's/^# \{0,1\}//'
+	[ -z "$CMD" ] || [ "$CMD" = help ] || exit 2
+	;;
+esac

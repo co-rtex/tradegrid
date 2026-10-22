@@ -14,7 +14,9 @@ go version
 ```
 
 The backend uses only the Go standard library. No database or other services
-are needed to run it.
+are needed to run it. A local PostgreSQL container and migration workflow for
+schema work are described in [db/README.md](db/README.md); the running backend
+does not connect to it in Sprint 2.
 
 ## Run the backend
 
@@ -58,6 +60,10 @@ they exercise as features are introduced.
 ```text
 backend/
   go.mod              Module import path and minimum Go version
+  db/
+    migrate           Applies and reports versioned SQL migrations
+    migrations/       Migration files, NNNN_description.sql
+    test-migrate      Self-test for the migration tool
   cmd/
     server/
       main.go         Executable entry point

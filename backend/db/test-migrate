@@ -6,15 +6,31 @@
 # and temporary migration files. The tradegrid database and the real
 # backend/db/migrations directory are never touched. The database is dropped
 # on exit, including after Ctrl-C.
+#
+# TRADEGRID_SELFTEST_SHELL runs the runner under a given shell instead of its
+# #! line, for example: TRADEGRID_SELFTEST_SHELL=dash dash backend/db/test-migrate
 set -eu
 
 ROOT=$(CDPATH= cd -- "$(dirname -- "$0")/../.." && pwd)
 MIGRATE="$ROOT/backend/db/migrate"
+SH=${TRADEGRID_SELFTEST_SHELL:-}
 TEST_DB=tg_migself_$$_$(od -An -N4 -tx1 /dev/urandom | tr -d ' \n')_test
+# A database that must survive a malicious drop-test-db name.
+VICTIM=${TEST_DB%_test}_victim
 TMP=
 BAK=
 BG=
 export TRADEGRID_DB_NAME=$TEST_DB
+
+migrate() {
+	${SH:+"$SH"} "$MIGRATE" "$@"
+}
+
+# admin SQL runs one statement in the maintenance database.
+admin() {
+	docker compose -f "$ROOT/compose.yaml" exec -T postgres \
+		sh -c 'exec psql -X -q -At -v ON_ERROR_STOP=1 -U "$POSTGRES_USER" -d postgres -c "$1"' psql "$1" </dev/null
+}
 
 cleanup() {
 	trap - EXIT HUP INT TERM
@@ -22,8 +38,12 @@ cleanup() {
 		kill "$pid" 2>/dev/null || true
 	done
 	wait 2>/dev/null || true
-	"$MIGRATE" drop-test-db "$TEST_DB" >/dev/null 2>&1 ||
-		echo "warning: could not drop $TEST_DB; run: backend/db/migrate drop-test-db $TEST_DB" >&2
+	if [ -n "$BAK" ] && [ -e "$BAK/started" ]; then
+		migrate drop-test-db "$TEST_DB" >/dev/null 2>&1 ||
+			echo "warning: could not drop $TEST_DB; run: backend/db/migrate drop-test-db $TEST_DB" >&2
+		admin "DROP DATABASE IF EXISTS $VICTIM WITH (FORCE)" >/dev/null 2>&1 ||
+			echo "warning: could not drop $VICTIM" >&2
+	fi
 	rm -rf "$TMP" "$BAK"
 }
 trap cleanup EXIT
@@ -60,8 +80,8 @@ fingerprint() {
 }
 
 reset_db() {
-	"$MIGRATE" drop-test-db "$TEST_DB" >/dev/null
-	"$MIGRATE" create-test-db "$TEST_DB" >/dev/null
+	migrate drop-test-db "$TEST_DB" >/dev/null
+	migrate create-test-db "$TEST_DB" >/dev/null
 	rm -f "$TMP"/*.sql
 }
 
@@ -74,12 +94,84 @@ sha() {
 expect_untouched() {
 	label=$1
 	before=$(fingerprint)
-	if "$MIGRATE" up </dev/null >"$BAK/out" 2>&1; then fail "$label: up reported success: $(cat "$BAK/out")"; fi
+	if migrate up </dev/null >"$BAK/out" 2>&1; then fail "$label: up reported success: $(cat "$BAK/out")"; fi
 	[ "$(fingerprint)" = "$before" ] || fail "$label: failed migration changed the database"
 	rm -f "$2"
 }
 
+# Malformed names are refused before any SQL runs. These checks need no
+# database: a stand-in docker on PATH records every call, and none may happen.
+FAKE="$BAK/fake-bin"
+mkdir "$FAKE"
+cat >"$FAKE/docker" <<'EOF'
+#!/bin/sh
+echo "$*" >>"${0%/*}/calls"
+exit 99
+EOF
+chmod +x "$FAKE/docker"
+
+# refused LABEL ARGS... runs the runner with the stand-in docker and requires
+# it to refuse ARGS without calling docker.
+refused() {
+	r_label=$1
+	shift
+	rm -f "$FAKE/calls"
+	if (PATH="$FAKE:$PATH" && migrate "$@") >"$BAK/out" 2>&1; then fail "$r_label: accepted"; fi
+	[ ! -e "$FAKE/calls" ] || fail "$r_label: called docker before refusing: $(cat "$FAKE/calls")"
+	grep -Eq '^migrate: (refusing|bad migration file name|usage)' "$BAK/out" || fail "$r_label: $(cat "$BAK/out")"
+}
+
+# The stand-in must see valid names, or the checks below prove nothing.
+rm -f "$FAKE/calls"
+(PATH="$FAKE:$PATH" && migrate drop-test-db ok_test) >/dev/null 2>&1 || true
+[ -s "$FAKE/calls" ] || fail "the stand-in docker was not called for a valid name"
+
+nl='
+'
+tab=$(printf '\t')
+cr=$(printf '\r')
+long64=$(printf 'a%.0s' $(seq 1 59))_test
+n=0
+# "victim;<newline>x_test" passed the old line-by-line grep check and dropped
+# the database "victim".
+for name in "victim;${nl}x_test" "x_test${nl}" "${nl}x_test" "x_test${nl}victim" "victim x_test" \
+	"x_test " " x_test" "x${tab}_test" "x${cr}_test" "x_test;" "x;y_test" "x'y_test" 'x"y_test' \
+	'x\y_test' 'x$y_test' 'x-y_test' 'x.y_test' 'x*_test' 'x(y)_test' 'x_test--' 'X_test' 'x_TEST' \
+	'_x_test' '1x_test' '_test' 'x_test_' 'xtest' 'x_testx' '' "$(printf '\303\251_test')" "$long64" \
+	"x_test; DROP DATABASE tradegrid" tradegrid postgres; do
+	n=$((n + 1))
+	refused "drop-test-db '$name'" drop-test-db "$name"
+	refused "create-test-db '$name'" create-test-db "$name"
+done
+refused "drop-test-db without a name" drop-test-db
+refused "drop-test-db with two names" drop-test-db a_test b_test
+pass "test database commands refuse $n malformed names before any SQL runs"
+
+n=0
+for name in "tradegrid${nl}x" "host=127.0.0.1 dbname=tradegrid" "postgresql://tradegrid@127.0.0.1/tradegrid" \
+	Tradegrid 'trade grid' 'a;b' "a'b" '1db' "$(printf 'a%.0s' $(seq 1 64))"; do
+	n=$((n + 1))
+	(TRADEGRID_DB_NAME=$name && refused "TRADEGRID_DB_NAME '$name' (status)" status) || exit 1
+	(TRADEGRID_DB_NAME=$name && refused "TRADEGRID_DB_NAME '$name' (up)" up) || exit 1
+done
+pass "up and status refuse $n malformed TRADEGRID_DB_NAME values before any SQL runs"
+
+n=0
+for name in "0001_a.sql${nl}0002_b.sql" "0001_a.sql${nl}" '0001_a b.sql' '0001_a;b.sql' "0001_a'b.sql" \
+	'0001_a$b.sql' '0001_a*.sql' '0001_A.sql' '0001_.sql' '001_a.sql' '00001_a.sql' '0001-a.sql' \
+	'0001_a.SQL' '0001_a.sql.bak' "$(printf '0001_\303\251.sql')"; do
+	n=$((n + 1))
+	rm -rf "$BAK/names"
+	mkdir "$BAK/names"
+	echo "SELECT 1;" >"$BAK/names/$name"
+	(TRADEGRID_MIGRATIONS_DIR=$BAK/names && refused "migration file '$name' (status)" status) || exit 1
+	(TRADEGRID_MIGRATIONS_DIR=$BAK/names && refused "migration file '$name' (up)" up) || exit 1
+done
+rm -rf "$BAK/names"
+pass "up and status refuse $n malformed migration file names before any SQL runs"
+
 compose up -d --wait postgres >/dev/null
+: >"$BAK/started"
 echo "test database: $TEST_DB"
 reset_db
 
@@ -101,7 +193,7 @@ cat >"$TMP/0001_create_widgets.sql" <<'SQL'
 CREATE TABLE selftest_widgets (id integer PRIMARY KEY);
 INSERT INTO selftest_widgets (id) VALUES (1);
 SQL
-"$MIGRATE" up >/dev/null || fail "first up"
+migrate up >/dev/null || fail "first up"
 [ "$(query "SELECT string_agg(version, ',' ORDER BY applied_at, version) FROM schema_migrations")" = "0001,0002" ] ||
 	fail "versions not recorded in order"
 for f in 0001_create_widgets.sql 0002_add_label.sql; do
@@ -110,13 +202,13 @@ for f in 0001_create_widgets.sql 0002_add_label.sql; do
 done
 pass "applies pending migrations in version order with their checksums"
 
-out=$("$MIGRATE" up) || fail "second up"
+out=$(migrate up) || fail "second up"
 echo "$out" | grep -q "ran 0 pending" || fail "rerun applied something: $out"
 [ "$(query "SELECT count(*) FROM selftest_widgets")" = 1 ] || fail "rerun duplicated data"
 [ "$(query "SELECT selftest_label(w) FROM selftest_widgets w")" = NONE ] || fail "function migration"
 pass "rerunning up is a no-op"
 
-out=$("$MIGRATE" status) || fail "status on clean history"
+out=$(migrate status) || fail "status on clean history"
 echo "$out" | grep -q "^applied   0001_create_widgets.sql" || fail "status: $out"
 pass "status reports applied migrations"
 
@@ -132,7 +224,7 @@ END;
 CREATE PROCEDURE selftest_noop() LANGUAGE plpgsql AS $$ BEGIN NULL; END $$;
 DO $$ BEGIN PERFORM selftest_sign(1); END $$
 SQL
-"$MIGRATE" up >/dev/null || fail "valid look-alike migration was rejected"
+migrate up >/dev/null || fail "valid look-alike migration was rejected"
 [ "$(query "SELECT selftest_sign(-5) || ':' || count(*) FROM selftest_words")" = "-1:2" ] ||
 	fail "look-alike migration did not apply"
 pass "accepts function bodies, BEGIN ATOMIC, and quoted look-alikes"
@@ -147,9 +239,9 @@ ALTER TABLE selftest_widgets ADD COLUMN extra int;
 SELECT 1 / 0;
 SQL
 before=$(fingerprint)
-if "$MIGRATE" up >/dev/null 2>&1; then fail "broken migration reported success"; fi
+if migrate up >/dev/null 2>&1; then fail "broken migration reported success"; fi
 [ "$(fingerprint)" = "$before" ] || fail "broken migration changed the database"
-"$MIGRATE" status | grep -q "^pending   0004_broken.sql" || fail "broken migration not pending"
+migrate status | grep -q "^pending   0004_broken.sql" || fail "broken migration not pending"
 rm "$TMP/0004_broken.sql"
 pass "failed migration exits non-zero and leaves the database unchanged"
 
@@ -265,7 +357,7 @@ pass "server rejects $n bypass attempts even without the static check"
 # Losing the connection mid-migration fails and leaves nothing behind.
 printf 'CREATE TABLE selftest_leak (id int);\nSELECT pg_sleep(60);\n' >"$TMP/0004_killed.sql"
 before=$(fingerprint)
-"$MIGRATE" up >"$BAK/killed.log" 2>&1 &
+migrate up >"$BAK/killed.log" 2>&1 &
 BG=$!
 i=0
 until [ "$(query "SELECT pg_terminate_backend(pid) FROM pg_stat_activity
@@ -280,37 +372,153 @@ BG=
 rm "$TMP/0004_killed.sql"
 pass "killed connection fails and leaves the database unchanged"
 
+# Interruption. SIGINT must stop the migration on the server too, and the
+# runner must report only an outcome it has verified. A non-interactive shell
+# starts background jobs with SIGINT ignored, so the runner runs in the
+# foreground and a background helper sends the signal to it alone.
+#
+# interrupt CONDITION [PATH] runs up, with PATH if given, and sends SIGINT to
+# the runner once a session in the test database matches CONDITION (SQL over
+# pg_stat_activity). It leaves the output in $BAK/int.log, the exit status in
+# $int_status, and the duration in $int_secs. The helper creates
+# $BAK/int.signalled just before signalling.
+interrupt() {
+	: >"$BAK/int.pid"
+	rm -f "$BAK/int.signalled"
+	(
+		i=0
+		until [ -s "$BAK/int.pid" ] &&
+			[ "$(query "SELECT count(*) FROM pg_stat_activity
+			            WHERE datname = current_database() AND pid <> pg_backend_pid() AND $1")" = 1 ]; do
+			i=$((i + 1))
+			[ $i -lt 150 ] || exit 1
+			sleep 0.2
+		done
+		: >"$BAK/int.signalled"
+		kill -INT "$(cat "$BAK/int.pid")"
+	) &
+	BG=$!
+	int_start=$(date +%s)
+	int_status=0
+	env PATH="${2:-$PATH}" sh -c 'echo "$$" >"$1"; shift; exec "$@"' sh "$BAK/int.pid" ${SH:+"$SH"} "$MIGRATE" up \
+		</dev/null >"$BAK/int.log" 2>&1 || int_status=$?
+	int_secs=$(($(date +%s) - int_start))
+	wait "$BG" || fail "the migration never started: $(cat "$BAK/int.log")"
+	BG=
+	[ "$int_status" = 130 ] || fail "interrupted up exited $int_status, not 130: $(cat "$BAK/int.log")"
+	[ "$int_secs" -lt 30 ] || fail "interrupted up took ${int_secs}s to stop"
+}
+
+# no_session waits until no server session is still running a migration.
+no_session() {
+	i=0
+	until [ "$(query "SELECT count(*) FROM pg_stat_activity
+	                  WHERE datname = current_database() AND pid <> pg_backend_pid()
+	                    AND application_name LIKE 'tradegrid-migrate-%'")" = 0 ]; do
+		i=$((i + 1))
+		[ $i -lt 50 ] || fail "a migration session is still running"
+		sleep 0.2
+	done
+}
+
+if sh -c 'trap "exit 0" INT; kill -INT $$; sleep 1; exit 1' 2>/dev/null; then
+	# Before COMMIT: the server session is terminated at once, and the
+	# runner reports the migration as not applied only after checking.
+	printf 'CREATE TABLE selftest_leak (id int);\nSELECT pg_sleep(60);\n' >"$TMP/0004_interrupted.sql"
+	before=$(fingerprint)
+	interrupt "query LIKE '%pg_sleep(60)%'"
+	grep -q "0004_interrupted.sql was not applied: COMMIT was never sent" "$BAK/int.log" ||
+		fail "interrupted before COMMIT: $(cat "$BAK/int.log")"
+	if grep -q "rolled back" "$BAK/int.log"; then fail "claimed a rollback: $(cat "$BAK/int.log")"; fi
+	no_session
+	[ "$(fingerprint)" = "$before" ] || fail "interrupted migration changed the database"
+	migrate status 2>/dev/null | grep -q "^pending   0004_interrupted.sql" || fail "interrupted migration not pending"
+	rm "$TMP/0004_interrupted.sql"
+	pass "SIGINT before COMMIT stops the server session and reports the verified outcome"
+
+	# During COMMIT: a deferred trigger keeps the commit running. The
+	# runner may not know whether it finished, so it stops the session and
+	# checks schema_migrations.
+	cat >"$TMP/0004_slow_commit.sql" <<'SQL'
+CREATE TABLE selftest_slow_commit (id int);
+CREATE FUNCTION selftest_slow_commit() RETURNS trigger LANGUAGE plpgsql AS $$
+BEGIN
+	PERFORM pg_sleep(60);
+	RETURN NULL;
+END;
+$$;
+CREATE CONSTRAINT TRIGGER selftest_slow_commit AFTER INSERT ON selftest_slow_commit
+	DEFERRABLE INITIALLY DEFERRED FOR EACH ROW EXECUTE FUNCTION selftest_slow_commit();
+INSERT INTO selftest_slow_commit (id) VALUES (1);
+SQL
+	before=$(fingerprint)
+	interrupt "application_name LIKE 'tradegrid-migrate-%' AND state = 'active' AND query LIKE 'COMMIT;%'"
+	grep -q "0004_slow_commit.sql was not applied: its server session ended without committing" "$BAK/int.log" ||
+		fail "interrupted during COMMIT: $(cat "$BAK/int.log")"
+	no_session
+	[ "$(fingerprint)" = "$before" ] || fail "migration interrupted during COMMIT changed the database"
+	rm "$TMP/0004_slow_commit.sql"
+	pass "SIGINT during COMMIT stops the server session and reports the verified outcome"
+
+	# When the server cannot be checked, the outcome is reported as
+	# unknown. A docker wrapper starts failing once the signal is sent.
+	mkdir "$BAK/flaky-bin"
+	cat >"$BAK/flaky-bin/docker" <<EOF
+#!/bin/sh
+[ ! -e "$BAK/int.signalled" ] || exit 1
+exec $(command -v docker) "\$@"
+EOF
+	chmod +x "$BAK/flaky-bin/docker"
+	printf 'CREATE TABLE selftest_leak (id int);\nSELECT pg_sleep(60);\n' >"$TMP/0004_unknown.sql"
+	before=$(fingerprint)
+	interrupt "query LIKE '%pg_sleep(60)%'" "$BAK/flaky-bin:$PATH"
+	grep -q "the outcome of 0004_unknown.sql is unknown. Run .*backend/db/migrate status" "$BAK/int.log" ||
+		fail "unverifiable interruption: $(cat "$BAK/int.log")"
+	if grep -Eq "was not applied|was committed" "$BAK/int.log"; then
+		fail "claimed an outcome it could not check: $(cat "$BAK/int.log")"
+	fi
+	query "SELECT pg_terminate_backend(pid) FROM pg_stat_activity
+	       WHERE datname = current_database() AND pid <> pg_backend_pid() AND query LIKE '%pg_sleep(60)%'" >/dev/null
+	no_session
+	[ "$(fingerprint)" = "$before" ] || fail "unverified migration was committed"
+	rm "$TMP/0004_unknown.sql"
+	rm -rf "$BAK/flaky-bin"
+	pass "SIGINT reports an unknown outcome when the server cannot be checked"
+else
+	echo "skip: interruption tests (SIGINT is ignored in this environment)"
+fi
+
 # History must match the files.
 cp "$TMP/0001_create_widgets.sql" "$BAK/0001.sql"
 echo "-- edited" >>"$TMP/0001_create_widgets.sql"
-if "$MIGRATE" status >/dev/null 2>&1; then fail "status ignored a modified migration"; fi
-"$MIGRATE" status 2>/dev/null | grep -q "^MODIFIED  0001_create_widgets.sql" || fail "status did not flag MODIFIED"
-if "$MIGRATE" up >/dev/null 2>&1; then fail "up ran with a modified migration"; fi
+if migrate status >/dev/null 2>&1; then fail "status ignored a modified migration"; fi
+migrate status 2>/dev/null | grep -q "^MODIFIED  0001_create_widgets.sql" || fail "status did not flag MODIFIED"
+if migrate up >/dev/null 2>&1; then fail "up ran with a modified migration"; fi
 mv "$BAK/0001.sql" "$TMP/0001_create_widgets.sql"
 pass "modified applied migrations block status and up"
 
 mv "$TMP/0002_add_label.sql" "$BAK/0002.sql"
-if "$MIGRATE" up >/dev/null 2>&1; then fail "up ran with a missing migration"; fi
-"$MIGRATE" status 2>/dev/null | grep -q "^MISSING   0002_add_label.sql" || fail "status did not flag MISSING"
+if migrate up >/dev/null 2>&1; then fail "up ran with a missing migration"; fi
+migrate status 2>/dev/null | grep -q "^MISSING   0002_add_label.sql" || fail "status did not flag MISSING"
 mv "$BAK/0002.sql" "$TMP/0002_add_label.sql"
 pass "missing applied migrations block status and up"
 
 # Versions cannot be applied out of order or reused, and names are checked.
 echo "SELECT 1;" >"$TMP/0000_late.sql"
-if "$MIGRATE" up >/dev/null 2>&1; then fail "applied a version older than the latest"; fi
-"$MIGRATE" status 2>/dev/null | grep -q "^BLOCKED   0000_late.sql" || fail "status did not flag BLOCKED"
+if migrate up >/dev/null 2>&1; then fail "applied a version older than the latest"; fi
+migrate status 2>/dev/null | grep -q "^BLOCKED   0000_late.sql" || fail "status did not flag BLOCKED"
 rm "$TMP/0000_late.sql"
 echo "SELECT 1;" >"$TMP/0002_duplicate.sql"
-if "$MIGRATE" up >/dev/null 2>&1; then fail "accepted a reused version"; fi
+if migrate up >/dev/null 2>&1; then fail "accepted a reused version"; fi
 rm "$TMP/0002_duplicate.sql"
 echo "SELECT 1;" >"$TMP/4_Bad-Name.sql"
-if "$MIGRATE" up >/dev/null 2>&1; then fail "accepted a bad file name"; fi
+if migrate up >/dev/null 2>&1; then fail "accepted a bad file name"; fi
 rm "$TMP/4_Bad-Name.sql"
 printf 'SELECT 1;\nCOMMIT;\n' >"$TMP/0009_invalid.sql"
-if "$MIGRATE" status >/dev/null 2>&1; then fail "status accepted an invalid pending migration"; fi
-"$MIGRATE" status 2>/dev/null | grep -q "^INVALID   0009_invalid.sql" || fail "status did not flag INVALID"
+if migrate status >/dev/null 2>&1; then fail "status accepted an invalid pending migration"; fi
+migrate status 2>/dev/null | grep -q "^INVALID   0009_invalid.sql" || fail "status did not flag INVALID"
 rm "$TMP/0009_invalid.sql"
-"$MIGRATE" status >/dev/null || fail "status after restoring files"
+migrate status >/dev/null || fail "status after restoring files"
 pass "rejects out-of-order versions, reused versions, bad names, and invalid files"
 
 # Concurrent runs apply a migration once and all succeed.
@@ -322,7 +530,7 @@ SQL
 echo "CREATE TABLE selftest_after_slow (id integer);" >"$TMP/0002_after.sql"
 pids=
 for r in a b c; do
-	"$MIGRATE" up >"$BAK/$r.log" 2>&1 &
+	migrate up >"$BAK/$r.log" 2>&1 &
 	pids="$pids $!"
 done
 BG=$pids
@@ -359,7 +567,7 @@ SELECT pg_advisory_unlock(hashtext('tradegrid.migrate'));
 SQL
 	helper=$!
 	BG=$helper
-	"$MIGRATE" up >"$BAK/race.log" 2>&1
+	migrate up >"$BAK/race.log" 2>&1
 	race_status=$?
 	wait "$helper" || fail "lock helper failed"
 	BG=
@@ -401,18 +609,27 @@ $$;
 CREATE TRIGGER selftest_tamper BEFORE INSERT ON schema_migrations
 	FOR EACH ROW EXECUTE FUNCTION selftest_tamper();
 SQL
-if "$MIGRATE" up >"$BAK/out" 2>&1; then fail "up accepted a tracking row with the wrong checksum"; fi
+if migrate up >"$BAK/out" 2>&1; then fail "up accepted a tracking row with the wrong checksum"; fi
 grep -q "not recorded in schema_migrations with checksum" "$BAK/out" || fail "tamper: $(cat "$BAK/out")"
-if "$MIGRATE" status >/dev/null 2>&1; then fail "status accepted a tampered checksum"; fi
+if migrate status >/dev/null 2>&1; then fail "status accepted a tampered checksum"; fi
 pass "up and status detect a tracking row that does not match the file"
 
-# Destructive commands only accept isolated _test databases with names that
-# PostgreSQL will not truncate.
-long=$(printf 'a%.0s' $(seq 1 60))_test
-for name in tradegrid postgres tradegrid_test_db Tradegrid_test "$long" "x_test; DROP DATABASE tradegrid"; do
-	if "$MIGRATE" drop-test-db "$name" >/dev/null 2>&1; then fail "drop-test-db accepted $name"; fi
-	if "$MIGRATE" create-test-db "$name" >/dev/null 2>&1; then fail "create-test-db accepted $name"; fi
-done
-pass "test database commands refuse names not ending in _test or longer than 63 characters"
+# The name checks hold against a real server: the name that dropped
+# "victim" before is refused and the database survives, and the longest
+# allowed name works.
+admin "CREATE DATABASE $VICTIM" >/dev/null
+if migrate drop-test-db "$VICTIM;${nl}x_test" >"$BAK/out" 2>&1; then fail "drop-test-db accepted a newline"; fi
+[ "$(admin "SELECT count(*) FROM pg_database WHERE datname = '$VICTIM'")" = 1 ] ||
+	fail "drop-test-db dropped $VICTIM: $(cat "$BAK/out")"
+admin "DROP DATABASE $VICTIM" >/dev/null
+long63=${TEST_DB%_test}
+while [ ${#long63} -lt 58 ]; do long63=${long63}x; done
+long63=${long63}_test
+migrate create-test-db "$long63" >/dev/null || fail "create-test-db refused a 63-byte name"
+[ "$(admin "SELECT datname FROM pg_database WHERE datname = '$long63'")" = "$long63" ] ||
+	fail "63-byte name was not created as given"
+migrate drop-test-db "$long63" >/dev/null || fail "drop-test-db refused a 63-byte name"
+[ "$(admin "SELECT count(*) FROM pg_database WHERE datname = '$long63'")" = 0 ] || fail "63-byte name was not dropped"
+pass "drop-test-db cannot reach other databases, and 63-byte names work end to end"
 
 echo "all migration self-tests passed"

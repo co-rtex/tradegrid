@@ -15,19 +15,92 @@
 #   TRADEGRID_MIGRATIONS_DIR  Directory of migration files. Defaults to
 #                             backend/db/migrations.
 #
+# Database names must be lowercase PostgreSQL identifiers of at most 63 bytes
+# (a-z, 0-9, and _, not starting with a digit).
+#
 # psql runs inside the compose "postgres" service, so no PostgreSQL client is
 # needed on the host. See backend/db/README.md.
 set -eu
+
+# Match names byte by byte whatever the caller's locale.
+LC_ALL=C
+export LC_ALL
 
 ROOT=$(CDPATH= cd -- "$(dirname -- "$0")/../.." && pwd)
 MIGRATIONS_DIR=${TRADEGRID_MIGRATIONS_DIR:-$ROOT/backend/db/migrations}
 DB=${TRADEGRID_DB_NAME:-}
 LOCK="pg_advisory_xact_lock(hashtext('tradegrid.migrate'))"
 WORK=
+PSQL_APP=tradegrid-migrate
+# The migration in flight, for the signal handler. See apply_one.
+A_FILE=
+A_VERSION=
+A_SUM=
+A_STATE=
+A_SESSION=
+A_PENDING=
+count=0
+
+# Character sets for names, spelled out because ranges such as [a-z] depend
+# on the locale in some shells.
+LOWER=abcdefghijklmnopqrstuvwxyz
+DIGITS=0123456789
+HEX=0123456789abcdef
 
 die() {
 	echo "migrate: $*" >&2
 	exit 1
+}
+
+# Names are checked as whole strings with case patterns, never with grep,
+# which matches line by line and would accept "victim;<newline>x_test".
+
+# is_identifier NAME succeeds if NAME is a lowercase PostgreSQL identifier
+# that needs no quoting and that PostgreSQL will not truncate: a letter or
+# underscore, then letters, digits, or underscores, at most 63 bytes.
+is_identifier() {
+	case $1 in
+	'' | *[!${LOWER}${DIGITS}_]* | [!${LOWER}_]*) return 1 ;;
+	esac
+	[ ${#1} -le 63 ]
+}
+
+# is_test_db NAME succeeds if NAME is an identifier that starts with a letter
+# and ends in _test.
+is_test_db() {
+	is_identifier "$1" || return 1
+	case $1 in
+	[$LOWER]*_test) return 0 ;;
+	esac
+	return 1
+}
+
+# is_migration_name NAME succeeds for NNNN_description.sql, where the
+# description is lowercase letters, digits, and underscores.
+is_migration_name() {
+	case $1 in
+	[$DIGITS][$DIGITS][$DIGITS][$DIGITS]_?*.sql) ;;
+	*) return 1 ;;
+	esac
+	imn_desc=${1#?????}
+	imn_desc=${imn_desc%.sql}
+	case $imn_desc in
+	'' | *[!${LOWER}${DIGITS}_]*) return 1 ;;
+	esac
+}
+
+# is_hex VALUE LENGTH succeeds if VALUE is exactly LENGTH lowercase hex digits.
+is_hex() {
+	case $1 in
+	'' | *[!$HEX]*) return 1 ;;
+	esac
+	[ ${#1} -eq "$2" ]
+}
+
+is_number() {
+	case $1 in
+	'' | *[!$DIGITS]*) return 1 ;;
+	esac
 }
 
 # Remove the private snapshot directory on any exit. Command substitution
@@ -38,17 +111,38 @@ cleanup() {
 	fi
 }
 trap cleanup EXIT
-trap 'exit 129' HUP
-trap 'exit 130' INT
-trap 'exit 143' TERM
+
+# While a migration is in flight, a signal must not just exit: the server may
+# still be running it. on_signal stops it and reports what really happened.
+set_signal_traps() {
+	trap 'on_signal 129' HUP
+	trap 'on_signal 130' INT
+	trap 'on_signal 143' TERM
+}
+set_signal_traps
+
+on_signal() {
+	trap '' HUP INT TERM
+	if [ "$count" -gt 0 ]; then
+		echo "migrate: interrupted after applying $count migration(s)" >&2
+	fi
+	if [ -n "$A_FILE" ]; then
+		# A second signal gives up on finding out.
+		trap 'echo "migrate: interrupted again; the outcome of $A_FILE is unknown. Run backend/db/migrate status." >&2; exit '"$1" HUP INT TERM
+		echo "migrate: interrupted while applying $A_FILE" >&2
+		stop_session
+		resolve_outcome
+	fi
+	exit "$1"
+}
 
 # run_psql DATABASE [psql args...] reads SQL from stdin. An empty DATABASE
 # means the container's POSTGRES_DB. Any SQL error stops psql with a non-zero
-# exit status.
+# exit status. The session's application_name is $PSQL_APP.
 run_psql() {
 	target=$1
 	shift
-	docker compose -f "$ROOT/compose.yaml" exec -T -e TG_DB="$target" postgres \
+	docker compose -f "$ROOT/compose.yaml" exec -T -e TG_DB="$target" -e PGAPPNAME="$PSQL_APP" postgres \
 		sh -c 'exec psql -X -q -v ON_ERROR_STOP=1 -U "$POSTGRES_USER" -d "${TG_DB:-$POSTGRES_DB}" "$@"' psql "$@"
 }
 
@@ -60,13 +154,13 @@ checksum() {
 		cs_out=$(shasum -a 256 <"$1") || return 1
 	fi
 	cs_out=${cs_out%% *}
-	printf '%s\n' "$cs_out" | grep -Eq '^[0-9a-f]{64}$' || return 1
+	is_hex "$cs_out" 64 || return 1
 	printf '%s\n' "$cs_out"
 }
 
 random_hex() {
 	rh=$(od -An -N8 -tx1 /dev/urandom | tr -d ' \n')
-	printf '%s\n' "$rh" | grep -Eq '^[0-9a-f]{16}$' || return 1
+	is_hex "$rh" 16 || return 1
 	printf '%s\n' "$rh"
 }
 
@@ -228,7 +322,7 @@ load_files() {
 		case $f in
 		.gitkeep | README.md) continue ;;
 		esac
-		echo "$f" | grep -Eq '^[0-9]{4}_[a-z0-9_]+\.sql$' ||
+		is_migration_name "$f" ||
 			die "bad migration file name '$f' (want NNNN_lowercase_description.sql)"
 		[ -f "$path" ] || die "$f is not a regular file"
 		FILES="$FILES$f
@@ -241,7 +335,9 @@ load_files() {
 
 # applied prints "version|name|checksum|applied_at" for each recorded
 # migration, or nothing when the tracking table does not exist yet. It fails
-# if the database cannot be read, so an outage never looks like empty history.
+# if the database cannot be read, so an outage never looks like empty history,
+# and if a recorded version or name is malformed, since names are used as
+# file paths.
 applied() {
 	exists=$(echo "SELECT to_regclass('public.schema_migrations') IS NOT NULL;" | run_psql "$DB" -At) ||
 		die "cannot query database ${DB:-default}"
@@ -250,9 +346,19 @@ applied() {
 	f) return 0 ;;
 	*) die "unexpected answer from database ${DB:-default}: $exists" ;;
 	esac
-	echo "SELECT version, name, checksum, to_char(applied_at AT TIME ZONE 'UTC', 'YYYY-MM-DD\"T\"HH24:MI:SS\"Z\"')
-	      FROM public.schema_migrations ORDER BY version;" | run_psql "$DB" -At -F '|' ||
+	ap_rows=$(echo "SELECT version, name, checksum, to_char(applied_at AT TIME ZONE 'UTC', 'YYYY-MM-DD\"T\"HH24:MI:SS\"Z\"')
+	      FROM public.schema_migrations ORDER BY version;" | run_psql "$DB" -At -F '|') ||
 		die "cannot read public.schema_migrations in ${DB:-default}"
+	while IFS='|' read -r ap_version ap_name _; do
+		[ -n "$ap_version$ap_name" ] || continue
+		case $ap_version in
+		[$DIGITS][$DIGITS][$DIGITS][$DIGITS]) is_migration_name "$ap_name" && continue ;;
+		esac
+		die "public.schema_migrations in ${DB:-default} has a malformed row (version '$ap_version', name '$ap_name')"
+	done <<EOF
+$ap_rows
+EOF
+	[ -z "$ap_rows" ] || printf '%s\n' "$ap_rows"
 }
 
 latest_version() {
@@ -379,8 +485,13 @@ prepare() {
 # metacommands, no variable interpolation, no client-side error handling),
 # and the server refuses any transaction control in it ("EXECUTE of
 # transaction commands is not implemented"). The tags carry a random nonce
-# that the file is checked not to contain. The nonce also marks psql's
-# success line, which only exists if psql reached the end of the script.
+# that the file is checked not to contain.
+#
+# COMMIT is not part of the script. psql reports "ready" once the migration
+# and its tracking row have succeeded, and only then does the session send
+# COMMIT. If the runner stops first, psql's input ends without COMMIT and the
+# server rolls the transaction back, so a migration cannot be committed after
+# the runner has gone. The nonce marks psql's progress lines.
 apply_one() {
 	a_f=$1
 	a_version=${a_f%%_*}
@@ -396,6 +507,9 @@ apply_one() {
 	{
 		cat <<EOF
 \\set SHOW_CONTEXT never
+SELECT pid AS tg_pid, (extract(epoch FROM backend_start) * 1000000)::bigint AS tg_start
+	FROM pg_stat_activity WHERE pid = pg_backend_pid() \\gset
+\\warn tradegrid-migrate: backend $a_nonce :tg_pid :tg_start
 BEGIN;
 SET LOCAL standard_conforming_strings = on;
 SELECT $LOCK;
@@ -410,7 +524,7 @@ END
 SELECT EXISTS (SELECT 1 FROM public.schema_migrations WHERE version = '$a_version') AS tg_done \\gset
 \\if :tg_done
 ROLLBACK;
-\\echo 'tradegrid-migrate: skipped $a_nonce'
+\\warn tradegrid-migrate: skipped $a_nonce
 \\else
 DO \$tg_order\$
 BEGIN
@@ -433,24 +547,163 @@ $a_sql_tag;
 END
 $a_run_tag;
 INSERT INTO public.schema_migrations (version, name, checksum) VALUES ('$a_version', '$a_f', '$a_sum');
-COMMIT;
-\\echo 'tradegrid-migrate: applied $a_nonce'
+\\warn tradegrid-migrate: ready $a_nonce
 \\endif
 EOF
 	} >"$a_script" || die "cannot write the script for $a_f"
 
 	echo "applying  $a_f"
-	a_out=$(run_psql "$DB" -o /dev/null <"$a_script") ||
-		die "$a_f failed; its transaction was rolled back and nothing was recorded"
-	case $a_out in
-	*"tradegrid-migrate: applied $a_nonce"*) count=$((count + 1)) ;;
-	*"tradegrid-migrate: skipped $a_nonce"*) echo "skipping  $a_f (applied by a concurrent run)" ;;
-	*) die "$a_f: psql exited without confirming the commit; run status to check" ;;
-	esac
+	A_STATE="$WORK/$a_nonce"
+	A_VERSION=$a_version
+	A_SUM=$a_sum
+	A_FILE=$a_f
+	# Hold signals until the session's pid is recorded, so the handler can
+	# always stop it.
+	trap 'A_PENDING=129' HUP
+	trap 'A_PENDING=130' INT
+	trap 'A_PENDING=143' TERM
+	session "$a_script" "$a_nonce" &
+	A_SESSION=$!
+	set_signal_traps
+	[ -z "$A_PENDING" ] || on_signal "$A_PENDING"
+	wait "$A_SESSION" || true
+	A_SESSION=
+	if [ -e "$A_STATE.skipped" ]; then
+		echo "skipping  $a_f (applied by a concurrent run)"
+	elif [ ! -e "$A_STATE.commit" ]; then
+		A_FILE=
+		die "$a_f failed before COMMIT was sent, so it was not applied and nothing was recorded"
+	elif [ ! -e "$A_STATE.applied" ]; then
+		echo "migrate: psql ended without confirming that $a_f was committed" >&2
+		resolve_outcome
+		exit 1
+	fi
 	a_row=$(echo "SELECT name || '|' || checksum FROM public.schema_migrations WHERE version = '$a_version';" |
 		run_psql "$DB" -At) || die "cannot confirm $a_f in schema_migrations"
 	[ "$a_row" = "$a_f|$a_sum" ] ||
 		die "$a_f is not recorded in schema_migrations with checksum $a_sum (found '$a_row')"
+	if [ -e "$A_STATE.applied" ]; then
+		count=$((count + 1))
+	fi
+	A_FILE=
+}
+
+# session SCRIPT NONCE runs in the background for apply_one. It feeds SCRIPT
+# to psql through a FIFO, relays psql's messages, and leaves $A_STATE.* files
+# for the runner: .backend (the server pid and its start time, which
+# together identify the session), .commit (written just before COMMIT is
+# sent), .applied (psql confirmed the commit), and .skipped. The
+# runner may kill it at any time; it has no traps, so it dies at once. SIGINT
+# does not reach it: the shell ignores SIGINT in background jobs.
+session() {
+	s_in="$A_STATE.in"
+	s_out="$A_STATE.out"
+	mkfifo "$s_in" "$s_out" || exit 1
+	PSQL_APP="tradegrid-migrate-$2"
+	run_psql "$DB" -o /dev/null <"$s_in" >"$s_out" 2>&1 &
+	echo "$!" >"$A_STATE.client"
+	exec 3>"$s_in" 4<"$s_out"
+	# psql stops reading after an error; its output says why.
+	cat -- "$1" >&3 2>/dev/null || true
+	while IFS= read -r s_line <&4 || [ -n "$s_line" ]; do
+		case $s_line in
+		"tradegrid-migrate: backend $2 "*)
+			printf '%s\n' "${s_line#"tradegrid-migrate: backend $2 "}" >"$A_STATE.backend"
+			;;
+		"tradegrid-migrate: ready $2")
+			# $$ is the runner. If it was killed outright, it cannot
+			# report the outcome, so do not commit.
+			kill -0 "$$" 2>/dev/null || break
+			: >"$A_STATE.commit"
+			(
+				trap '' PIPE
+				printf 'COMMIT;\n\\warn tradegrid-migrate: applied %s\n' "$2"
+			) >&3 2>/dev/null || true
+			exec 3>&-
+			;;
+		"tradegrid-migrate: skipped $2")
+			: >"$A_STATE.skipped"
+			exec 3>&-
+			;;
+		"tradegrid-migrate: applied $2")
+			: >"$A_STATE.applied"
+			;;
+		'') ;;
+		*) printf '%s\n' "$s_line" >&2 ;;
+		esac
+		s_line=
+	done
+	exec 3>&- 4<&-
+	wait "$(cat "$A_STATE.client")" || true
+}
+
+# stop_session stops the background session, so it can no longer send
+# COMMIT, and the docker client it started, so psql's input ends.
+stop_session() {
+	if [ -n "$A_SESSION" ]; then
+		ss_client=$(cat "$A_STATE.client" 2>/dev/null) || ss_client=
+		if is_number "$ss_client"; then
+			kill "$ss_client" 2>/dev/null || true
+		fi
+		kill "$A_SESSION" 2>/dev/null || true
+		wait "$A_SESSION" 2>/dev/null || true
+		A_SESSION=
+	fi
+}
+
+# resolve_outcome reports what happened to the migration in flight, checked
+# over a new connection. It first terminates the migration's server session,
+# found by its pid and start time (so a reused pid cannot match) or by its
+# application_name, and requires it to be gone:
+# then the transaction has committed or rolled back for good, and the
+# schema_migrations row, written in the same transaction, says which. The
+# migration is only reported as not applied when both are verified;
+# otherwise the outcome is reported as unknown.
+resolve_outcome() {
+	ro_hint="Run ${DB:+TRADEGRID_DB_NAME=$DB }backend/db/migrate status to check."
+	ro_backend=$(cat "$A_STATE.backend" 2>/dev/null) || ro_backend=
+	ro_pid=${ro_backend%% *}
+	ro_start=${ro_backend#* }
+	if ! is_number "$ro_pid" || ! is_number "$ro_start"; then
+		ro_pid=0
+		ro_start=0
+	fi
+	ro_match="((pid = $ro_pid AND (extract(epoch FROM backend_start) * 1000000)::bigint = $ro_start)
+	          OR application_name = 'tradegrid-migrate-${A_STATE##*/}') AND pid <> pg_backend_pid()"
+	ro_sql="SET client_min_messages = error;
+SELECT pg_terminate_backend(pid, 5000) FROM pg_stat_activity WHERE $ro_match;
+SELECT 'remaining=' || count(*) FROM pg_stat_activity WHERE $ro_match;
+SELECT 'row=' || coalesce((SELECT name || '|' || checksum FROM public.schema_migrations WHERE version = '$A_VERSION'), '');"
+	ro_out=$(printf '%s\n' "$ro_sql" | run_psql "$DB" -At 2>/dev/null) || ro_out=
+	ro_remaining=
+	ro_row=
+	ro_checked=
+	while IFS= read -r ro_line; do
+		case $ro_line in
+		remaining=*) ro_remaining=${ro_line#remaining=} ;;
+		row=*)
+			ro_row=${ro_line#row=}
+			ro_checked=1
+			;;
+		esac
+	done <<EOF
+$ro_out
+EOF
+	if [ -z "$ro_checked" ] || [ -z "$ro_remaining" ]; then
+		echo "migrate: could not reach the database; the outcome of $A_FILE is unknown. $ro_hint" >&2
+	elif [ "$ro_remaining" != 0 ]; then
+		echo "migrate: the server session running $A_FILE did not stop; the outcome is unknown. $ro_hint" >&2
+	elif [ "$ro_row" = "$A_FILE|$A_SUM" ]; then
+		echo "migrate: $A_FILE was committed and is recorded as applied." >&2
+	elif [ -n "$ro_row" ]; then
+		echo "migrate: version $A_VERSION is recorded as '$ro_row', not $A_FILE; the outcome is unknown. $ro_hint" >&2
+	elif [ ! -e "$A_STATE.commit" ]; then
+		echo "migrate: $A_FILE was not applied: COMMIT was never sent, its server session has ended, and schema_migrations has no row for it." >&2
+	elif [ "$ro_pid" != 0 ]; then
+		echo "migrate: $A_FILE was not applied: its server session ended without committing, and schema_migrations has no row for it." >&2
+	else
+		echo "migrate: the server session running $A_FILE could not be identified; the outcome is unknown. $ro_hint" >&2
+	fi
 }
 
 cmd_up() {
@@ -487,29 +740,40 @@ cmd_up() {
 	echo "ran $count pending migration(s) on ${DB:-default}"
 }
 
-# PostgreSQL truncates identifiers to 63 bytes. A longer name would lose its
-# _test suffix, so it is refused.
+# test_db_name NAME refuses, before any SQL runs, anything but a single test
+# database name. The name also reaches SQL only as a psql variable quoted as
+# an identifier (:"tg_db"), never spliced into the SQL text.
 test_db_name() {
 	[ $# -eq 1 ] || die "usage: migrate $CMD NAME"
-	echo "$1" | grep -Eq '^[a-z][a-z0-9_]*_test$' ||
-		die "refusing '$1': test database names must be lowercase and end in _test"
-	[ ${#1} -le 63 ] || die "refusing '$1': database names are limited to 63 characters"
+	is_test_db "$1" ||
+		die "refusing '$1': test database names must start with a letter, use only a-z, 0-9, and _, end in _test, and be at most 63 bytes"
+}
+
+check_db_name() {
+	[ -z "$DB" ] || is_identifier "$DB" ||
+		die "refusing TRADEGRID_DB_NAME '$DB': database names must use only a-z, 0-9, and _, not start with a digit, and be at most 63 bytes"
 }
 
 CMD=${1:-}
 [ $# -gt 0 ] && shift
 case $CMD in
-up) cmd_up ;;
-status) cmd_status ;;
+up)
+	check_db_name
+	cmd_up
+	;;
+status)
+	check_db_name
+	cmd_status
+	;;
 create-test-db)
 	test_db_name "$@"
-	echo "CREATE DATABASE $1;" | run_psql postgres || die "cannot create $1"
+	echo 'CREATE DATABASE :"tg_db";' | run_psql postgres -v "tg_db=$1" || die "cannot create $1"
 	echo "created $1"
 	;;
 drop-test-db)
 	test_db_name "$@"
-	printf "SET client_min_messages = warning;\nDROP DATABASE IF EXISTS %s WITH (FORCE);\n" "$1" |
-		run_psql postgres || die "cannot drop $1"
+	printf 'SET client_min_messages = warning;\nDROP DATABASE IF EXISTS :"tg_db" WITH (FORCE);\n' |
+		run_psql postgres -v "tg_db=$1" || die "cannot drop $1"
 	echo "dropped $1"
 	;;
 *)

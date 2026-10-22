@@ -96,6 +96,9 @@ How `up` behaves:
   records it in the `schema_migrations` table. If any statement fails, or the
   connection is lost, the whole migration rolls back, nothing is recorded,
   `up` stops and exits non-zero, and the migration stays `pending`.
+- `up` sends `COMMIT` only after the migration and its row have succeeded, and
+  only while it is still running. If `up` stops first, PostgreSQL rolls the
+  transaction back. See [Interrupting `up`](#interrupting-up).
 - After each commit, `up` reads the `schema_migrations` row back over a new
   connection and fails unless it names the file with the checksum of the exact
   bytes that ran. When it finishes, it checks that every file is recorded and
@@ -141,6 +144,41 @@ Limits of the rollback guarantee: PostgreSQL does not roll back sequence
 increments (`nextval`), so a failed migration can leave gaps in sequence
 values. Work a migration does over another connection, such as through
 `dblink`, is not part of its transaction.
+
+### Interrupting `up`
+
+Stopping your terminal's `psql` does not stop PostgreSQL: the server keeps
+running a statement it has already received. So when `up` gets Ctrl-C
+(`SIGINT`), `SIGTERM`, or `SIGHUP` while a migration is running, it does not
+just exit. It:
+
+1. stops sending input to `psql`. If `COMMIT` has not been sent yet, it never
+   will be, so the migration cannot be committed after `up` has gone.
+2. terminates the migration's server session and waits until it is gone. Its
+   transaction has then either committed or rolled back for good.
+3. reads `schema_migrations` over a new connection and reports what happened.
+
+It exits with status 130 (143 for `SIGTERM`, 129 for `SIGHUP`) and prints one
+of these:
+
+| Message says                                 | Meaning                                                              |
+| -------------------------------------------- | -------------------------------------------------------------------- |
+| `was not applied: COMMIT was never sent`     | Verified: the session has ended and nothing was recorded.            |
+| `was not applied: ... ended without committing` | Verified, although `COMMIT` had been sent.                        |
+| `was committed and is recorded as applied`   | The commit finished before the session was stopped.                  |
+| `the outcome ... is unknown`                 | `up` could not check, for example because the server was unreachable. |
+
+A migration that was not applied stays `pending`; rerun `up` to apply it.
+
+`up` reports a rollback only when it has verified it. If the outcome is
+unknown, run `backend/db/migrate status` (with the same `TRADEGRID_DB_NAME`) to
+see whether the migration is `applied` or `pending`. Pressing Ctrl-C a second
+time while `up` is checking makes it give up and report the outcome as unknown.
+
+`kill -9` cannot be handled, so `up` reports nothing and leaves its temporary
+directory (`tradegrid-migrate.*` under `$TMPDIR`) behind. `COMMIT` is still
+never sent after `up` has gone, but a migration whose `COMMIT` was already sent
+may have committed. Run `status` to find out.
 - Keep the core schema in [#39](https://github.com/co-rtex/tradegrid/issues/39),
   following the [#12](https://github.com/co-rtex/tradegrid/issues/12) design and
   the resources in [docs/api.md](../../docs/api.md#database-mapping).
@@ -149,8 +187,15 @@ values. Work a migration does over another connection, such as through
 
 Anything that drops or resets data must use a separate database whose name
 ends in `_test`. The tool refuses other names, so it cannot drop `tradegrid`.
-Names are also limited to 63 characters, because PostgreSQL would silently
-shorten a longer name and could cut off its `_test` suffix.
+
+Test database names must start with a lowercase letter, contain only lowercase
+letters, digits, and underscores, end in `_test`, and be at most 63 bytes,
+because PostgreSQL would silently shorten a longer name and could cut off its
+`_test` suffix. `TRADEGRID_DB_NAME` follows the same character rules (it may
+start with `_` and need not end in `_test`), and migration file names must be
+`NNNN_` plus lowercase letters, digits, and underscores plus `.sql`. Each name
+is checked as a whole string before any SQL runs, so spaces, newlines,
+punctuation, and quotes are all refused.
 
 ```bash
 backend/db/migrate create-test-db tradegrid_schema_test
@@ -175,9 +220,19 @@ backend/db/test-migrate
 The tests compare a full `pg_dump` of the database before and after each
 failed run, which proves the run left no change behind. They cover SQL errors,
 every form of transaction control, `psql` metacommands, a lost connection,
+Ctrl-C before and during `COMMIT` and when the outcome cannot be checked,
 unreadable and malformed files, a tampered tracking row, and concurrent runs.
+They also check, before any SQL runs, that malformed database and file names
+are refused, and that `drop-test-db` cannot reach a database
+(`tg_migself_<pid>_<random>_victim`) through a crafted name.
 A run that is killed outright (`kill -9`) cannot clean up. If that happens,
 remove the database it printed with `backend/db/migrate drop-test-db NAME`.
+
+To run the tests and the tool under a particular shell, for example `dash`:
+
+```bash
+TRADEGRID_SELFTEST_SHELL=dash dash backend/db/test-migrate
+```
 
 CI runs the same script in the `database` job.
 

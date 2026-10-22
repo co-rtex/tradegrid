@@ -64,6 +64,7 @@ backend/
   internal/
     matching/         Limit-order matching engine
     orders/           Order domain model
+    risk/             Pure cash/share reservation and settlement arithmetic
   README.md           Backend development instructions
 ```
 

@@ -2,32 +2,22 @@
 // specified in docs/matching-engine.md.
 package matching
 
-// Side is the direction of an order.
-type Side int
+import "github.com/co-rtex/tradegrid/backend/internal/orders"
+
+// Side is the direction of an order. It is the shared orders.Side, so the
+// engine and the Order domain model cannot disagree about sides.
+type Side = orders.Side
 
 const (
-	Buy Side = iota + 1
-	Sell
+	Buy  = orders.SideBuy
+	Sell = orders.SideSell
 )
 
-func (s Side) String() string {
-	switch s {
-	case Buy:
-		return "BUY"
-	case Sell:
-		return "SELL"
-	default:
-		return "UNKNOWN"
-	}
-}
-
-// Order is an accepted limit order handed to the matching engine.
+// Order is the engine's view of an accepted limit order: only the fields the
+// matching spec needs. Build one from the shared domain model with FromOrder.
 //
-// TODO(#6): Replace or align with the shared Order domain model once issue #6
-// is merged. Only the fields the matching spec needs are defined here.
-//
-// TODO: Numeric representation is out of scope for the matching spec. Prices
-// are integer cents and quantities are whole shares until a decision is made.
+// Prices are integer cents and quantities are whole units, as specified in
+// docs/order-model.md.
 type Order struct {
 	ID       string
 	Symbol   string
@@ -48,6 +38,10 @@ type Execution struct {
 
 // Result describes what happened when one incoming order was processed.
 type Result struct {
+	// Err is the validation error for a rejected order. Rejected orders produce
+	// no executions or remaining quantity and do not change the book.
+	// Check Err before interpreting Remaining: zero also occurs on a full fill.
+	Err error
 	// Executions in the order they occurred.
 	Executions []Execution
 	// Remaining is the incoming order's unfilled quantity. When positive, that

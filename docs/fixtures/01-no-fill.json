@@ -1,0 +1,125 @@
+{
+  "name": "no fill",
+  "description": "Alice sells 10 AAPL at $190.00 into an empty book. The order rests and reserves 10 shares.",
+  "setup": [],
+  "request": {
+    "method": "POST",
+    "path": "/api/v1/orders",
+    "body": {
+      "userId": "alice",
+      "symbol": "AAPL",
+      "side": "SELL",
+      "type": "LIMIT",
+      "price": 19000,
+      "quantity": 10
+    }
+  },
+  "response": {
+    "status": 201,
+    "body": {
+      "order": {
+        "id": "ord-1",
+        "userId": "alice",
+        "symbol": "AAPL",
+        "side": "SELL",
+        "type": "LIMIT",
+        "price": 19000,
+        "quantity": 10,
+        "remaining": 10,
+        "status": "NEW",
+        "sequence": 1,
+        "createdAt": "2026-10-20T15:00:01Z",
+        "updatedAt": "2026-10-20T15:00:01Z"
+      },
+      "executions": []
+    }
+  },
+  "after": {
+    "GET /api/v1/accounts": {
+      "accounts": [
+        {
+          "userId": "alice",
+          "displayName": "Alice (demo)",
+          "cash": {
+            "total": 10000000,
+            "reserved": 0,
+            "available": 10000000
+          },
+          "positions": [
+            {
+              "symbol": "AAPL",
+              "total": 100,
+              "reserved": 10,
+              "available": 90
+            },
+            {
+              "symbol": "MSFT",
+              "total": 100,
+              "reserved": 0,
+              "available": 100
+            }
+          ]
+        },
+        {
+          "userId": "bob",
+          "displayName": "Bob (demo)",
+          "cash": {
+            "total": 10000000,
+            "reserved": 0,
+            "available": 10000000
+          },
+          "positions": [
+            {
+              "symbol": "AAPL",
+              "total": 100,
+              "reserved": 0,
+              "available": 100
+            },
+            {
+              "symbol": "MSFT",
+              "total": 100,
+              "reserved": 0,
+              "available": 100
+            }
+          ]
+        }
+      ]
+    },
+    "GET /api/v1/orderbook?symbol=AAPL": {
+      "symbol": "AAPL",
+      "asOfSequence": 1,
+      "bids": [],
+      "asks": [
+        {
+          "price": 19000,
+          "quantity": 10,
+          "orderCount": 1
+        }
+      ]
+    },
+    "GET /api/v1/orders?userId=alice": {
+      "orders": [
+        {
+          "id": "ord-1",
+          "userId": "alice",
+          "symbol": "AAPL",
+          "side": "SELL",
+          "type": "LIMIT",
+          "price": 19000,
+          "quantity": 10,
+          "remaining": 10,
+          "status": "NEW",
+          "sequence": 1,
+          "createdAt": "2026-10-20T15:00:01Z",
+          "updatedAt": "2026-10-20T15:00:01Z"
+        }
+      ]
+    },
+    "GET /api/v1/orders?userId=bob": {
+      "orders": []
+    },
+    "GET /api/v1/executions?symbol=AAPL": {
+      "executions": []
+    }
+  }
+}

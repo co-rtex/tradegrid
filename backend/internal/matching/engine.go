@@ -64,8 +64,14 @@ func higher(a, b int64) bool { return a > b }
 func lower(a, b int64) bool  { return a < b }
 
 // Submit matches an accepted order against the opposite side of its symbol's
-// book and rests any remainder. It assumes the order is already valid.
+// book and rests any remainder. Nonpositive quantities are rejected without
+// changing the book. Other order fields are assumed to be already valid.
 func (bk *Book) Submit(o Order) Result {
+	// Validate before symbol() can create a book or matching can change orders.
+	// Returning only Err leaves executions nil and remaining quantity zero.
+	if err := o.ValidateQuantity(); err != nil {
+		return Result{Err: err}
+	}
 	sb := bk.symbol(o.Symbol)
 
 	opposite, own := &sb.asks, &sb.bids

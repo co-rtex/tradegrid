@@ -263,6 +263,9 @@ func TestSubmit(t *testing.T) {
 // checkInvariants verifies spec invariants that must hold after every input.
 func checkInvariants(t *testing.T, incoming Order, got Result, bk *Book) {
 	t.Helper()
+	if got.Err != nil {
+		t.Fatalf("valid order rejected: %v", got.Err)
+	}
 
 	// Execution quantity, conservation and resting price (invariants 4-7).
 	var filled int64

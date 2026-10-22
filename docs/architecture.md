@@ -29,6 +29,7 @@ Live UI Update
 ### Orders
 Receives, validates, tracks, and cancels orders.
 
+See [Order Input Validation](order-validation.md) for the initial validation rules for the LIMIT-order MVP.
 See [Order Domain Model](order-model.md) for the order fields, the closed Side/Type/Status enumerations, and the lifecycle transitions.
 
 ### Risk
@@ -50,6 +51,10 @@ Publishes order-book and execution updates to clients.
 
 ### Storage
 Persists accounts, orders, executions, positions, and related state.
+
+## Sprint 2 Contract
+
+See [Sprint 2 API and Exchange Contract](api.md) for the REST endpoints, JSON shapes, error codes, numeric bounds, demo accounts, reservation and settlement rules, and the shared [fixtures](fixtures/).
 
 ## Architectural Principle
 

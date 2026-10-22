@@ -1,0 +1,93 @@
+{
+  "name": "risk rejection",
+  "description": "Bob tries to buy 600 AAPL at $200.00 ($120,000.00) with $100,000.00 available. The request is rejected with 422; no order, reservation, or execution is created.",
+  "setup": [],
+  "request": {
+    "method": "POST",
+    "path": "/api/v1/orders",
+    "body": {
+      "userId": "bob",
+      "symbol": "AAPL",
+      "side": "BUY",
+      "type": "LIMIT",
+      "price": 20000,
+      "quantity": 600
+    }
+  },
+  "response": {
+    "status": 422,
+    "body": {
+      "error": {
+        "code": "INSUFFICIENT_CASH",
+        "message": "available cash 10000000 is less than 12000000"
+      }
+    }
+  },
+  "after": {
+    "GET /api/v1/accounts": {
+      "accounts": [
+        {
+          "userId": "alice",
+          "displayName": "Alice (demo)",
+          "cash": {
+            "total": 10000000,
+            "reserved": 0,
+            "available": 10000000
+          },
+          "positions": [
+            {
+              "symbol": "AAPL",
+              "total": 100,
+              "reserved": 0,
+              "available": 100
+            },
+            {
+              "symbol": "MSFT",
+              "total": 100,
+              "reserved": 0,
+              "available": 100
+            }
+          ]
+        },
+        {
+          "userId": "bob",
+          "displayName": "Bob (demo)",
+          "cash": {
+            "total": 10000000,
+            "reserved": 0,
+            "available": 10000000
+          },
+          "positions": [
+            {
+              "symbol": "AAPL",
+              "total": 100,
+              "reserved": 0,
+              "available": 100
+            },
+            {
+              "symbol": "MSFT",
+              "total": 100,
+              "reserved": 0,
+              "available": 100
+            }
+          ]
+        }
+      ]
+    },
+    "GET /api/v1/orderbook?symbol=AAPL": {
+      "symbol": "AAPL",
+      "asOfSequence": 0,
+      "bids": [],
+      "asks": []
+    },
+    "GET /api/v1/orders?userId=alice": {
+      "orders": []
+    },
+    "GET /api/v1/orders?userId=bob": {
+      "orders": []
+    },
+    "GET /api/v1/executions?symbol=AAPL": {
+      "executions": []
+    }
+  }
+}

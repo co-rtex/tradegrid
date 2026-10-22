@@ -2,24 +2,38 @@
 # Self-test for backend/db/migrate.
 #
 # Starts the compose PostgreSQL service if needed, then exercises the runner
-# against a disposable database (tradegrid_migrate_selftest_test) and
-# temporary migration files. The tradegrid database and the real
-# backend/db/migrations directory are never touched.
+# against a disposable database with a unique name (tg_migself_<pid>_<random>_test)
+# and temporary migration files. The tradegrid database and the real
+# backend/db/migrations directory are never touched. The database is dropped
+# on exit, including after Ctrl-C.
 set -eu
 
 ROOT=$(CDPATH= cd -- "$(dirname -- "$0")/../.." && pwd)
 MIGRATE="$ROOT/backend/db/migrate"
-TEST_DB=tradegrid_migrate_selftest_test
-TMP=$(mktemp -d)
-BAK=$(mktemp -d)
+TEST_DB=tg_migself_$$_$(od -An -N4 -tx1 /dev/urandom | tr -d ' \n')_test
+TMP=
+BAK=
+BG=
 export TRADEGRID_DB_NAME=$TEST_DB
-export TRADEGRID_MIGRATIONS_DIR=$TMP
 
 cleanup() {
-	"$MIGRATE" drop-test-db "$TEST_DB" >/dev/null 2>&1 || true
+	trap - EXIT HUP INT TERM
+	for pid in $BG; do
+		kill "$pid" 2>/dev/null || true
+	done
+	wait 2>/dev/null || true
+	"$MIGRATE" drop-test-db "$TEST_DB" >/dev/null 2>&1 ||
+		echo "warning: could not drop $TEST_DB; run: backend/db/migrate drop-test-db $TEST_DB" >&2
 	rm -rf "$TMP" "$BAK"
 }
 trap cleanup EXIT
+trap 'exit 129' HUP
+trap 'exit 130' INT
+trap 'exit 143' TERM
+
+TMP=$(mktemp -d)
+BAK=$(mktemp -d)
+export TRADEGRID_MIGRATIONS_DIR=$TMP
 
 fail() {
 	echo "FAIL: $*" >&2
@@ -27,9 +41,22 @@ fail() {
 }
 pass() { echo "ok: $*"; }
 
+compose() {
+	docker compose -f "$ROOT/compose.yaml" "$@"
+}
+
 query() {
-	docker compose -f "$ROOT/compose.yaml" exec -T postgres \
-		sh -c 'db=$1; shift; exec psql -X -q -At -v ON_ERROR_STOP=1 -U "$POSTGRES_USER" -d "$db" "$@"' psql "$TEST_DB" -c "$1"
+	compose exec -T postgres \
+		sh -c 'db=$1; shift; exec psql -X -q -At -v ON_ERROR_STOP=1 -U "$POSTGRES_USER" -d "$db" "$@"' psql "$TEST_DB" -c "$1" </dev/null
+}
+
+# fingerprint prints a digest of a full schema and data dump of the test
+# database. Equal fingerprints mean no object, row, or tracking entry changed.
+# pg_dump's per-run \restrict key is removed first.
+fingerprint() {
+	compose exec -T postgres sh -c 'pg_dump -U "$POSTGRES_USER" -d "$1"' sh "$TEST_DB" </dev/null >"$BAK/dump" ||
+		fail "pg_dump failed"
+	sed -e '/^\\restrict /d' -e '/^\\unrestrict /d' "$BAK/dump" | cksum
 }
 
 reset_db() {
@@ -38,17 +65,34 @@ reset_db() {
 	rm -f "$TMP"/*.sql
 }
 
-docker compose -f "$ROOT/compose.yaml" up -d --wait postgres >/dev/null
+sha() {
+	if command -v sha256sum >/dev/null 2>&1; then sha256sum <"$1"; else shasum -a 256 <"$1"; fi | cut -d ' ' -f 1
+}
+
+# expect_untouched LABEL FILE runs up with FILE as the only pending
+# migration and requires it to fail without changing the database at all.
+expect_untouched() {
+	label=$1
+	before=$(fingerprint)
+	if "$MIGRATE" up </dev/null >"$BAK/out" 2>&1; then fail "$label: up reported success: $(cat "$BAK/out")"; fi
+	[ "$(fingerprint)" = "$before" ] || fail "$label: failed migration changed the database"
+	rm -f "$2"
+}
+
+compose up -d --wait postgres >/dev/null
+echo "test database: $TEST_DB"
 reset_db
 
-# Migrations apply in version order, exactly once.
+# Migrations apply in version order, exactly once, and each is recorded with
+# the checksum of the file that ran.
 cat >"$TMP/0002_add_label.sql" <<'SQL'
--- Function bodies may contain BEGIN/END; only top-level transaction control
--- is rejected.
+-- Function bodies may contain BEGIN/END/COMMIT; only top-level transaction
+-- control is rejected.
 ALTER TABLE selftest_widgets ADD COLUMN label text NOT NULL DEFAULT 'none';
 CREATE FUNCTION selftest_label(w selftest_widgets) RETURNS text
 LANGUAGE plpgsql AS $$
 BEGIN
+	-- COMMIT; \q
 	RETURN upper(w.label);
 END;
 $$;
@@ -60,7 +104,11 @@ SQL
 "$MIGRATE" up >/dev/null || fail "first up"
 [ "$(query "SELECT string_agg(version, ',' ORDER BY applied_at, version) FROM schema_migrations")" = "0001,0002" ] ||
 	fail "versions not recorded in order"
-pass "applies pending migrations in version order"
+for f in 0001_create_widgets.sql 0002_add_label.sql; do
+	[ "$(query "SELECT checksum FROM schema_migrations WHERE name = '$f'")" = "$(sha "$TMP/$f")" ] ||
+		fail "$f recorded with the wrong checksum"
+done
+pass "applies pending migrations in version order with their checksums"
 
 out=$("$MIGRATE" up) || fail "second up"
 echo "$out" | grep -q "ran 0 pending" || fail "rerun applied something: $out"
@@ -72,29 +120,167 @@ out=$("$MIGRATE" status) || fail "status on clean history"
 echo "$out" | grep -q "^applied   0001_create_widgets.sql" || fail "status: $out"
 pass "status reports applied migrations"
 
-# A failing migration reports failure and leaves nothing behind.
-cat >"$TMP/0003_broken.sql" <<'SQL'
+# Valid SQL that only looks like transaction control or metacommands.
+cat >"$TMP/0003_lookalikes.sql" <<'SQL'
+CREATE TABLE selftest_words (begin_at int, "end" int, note text);
+COMMENT ON TABLE selftest_words IS 'COMMIT; ROLLBACK; \q';
+INSERT INTO selftest_words (note) VALUES (E'it\'s; COMMIT'), ($tag$ END; \set $tag$); /* nested /* COMMIT; */ \q */
+CREATE FUNCTION selftest_sign(x int) RETURNS int LANGUAGE sql
+BEGIN ATOMIC
+	SELECT CASE WHEN x > 0 THEN 1 WHEN x < 0 THEN -1 ELSE 0 END;
+END;
+CREATE PROCEDURE selftest_noop() LANGUAGE plpgsql AS $$ BEGIN NULL; END $$;
+DO $$ BEGIN PERFORM selftest_sign(1); END $$
+SQL
+"$MIGRATE" up >/dev/null || fail "valid look-alike migration was rejected"
+[ "$(query "SELECT selftest_sign(-5) || ':' || count(*) FROM selftest_words")" = "-1:2" ] ||
+	fail "look-alike migration did not apply"
+pass "accepts function bodies, BEGIN ATOMIC, and quoted look-alikes"
+
+# A failing migration reports failure and leaves no change behind: not its
+# table, not its row changes, not a tracking row.
+cat >"$TMP/0004_broken.sql" <<'SQL'
 CREATE TABLE selftest_broken (id integer);
+INSERT INTO selftest_widgets (id) VALUES (2);
+UPDATE selftest_widgets SET label = 'changed';
+ALTER TABLE selftest_widgets ADD COLUMN extra int;
 SELECT 1 / 0;
 SQL
+before=$(fingerprint)
 if "$MIGRATE" up >/dev/null 2>&1; then fail "broken migration reported success"; fi
-[ "$(query "SELECT to_regclass('selftest_broken') IS NULL")" = t ] || fail "broken migration left a table"
-[ "$(query "SELECT count(*) FROM schema_migrations WHERE version = '0003'")" = 0 ] || fail "broken migration recorded"
-"$MIGRATE" status | grep -q "^pending   0003_broken.sql" || fail "broken migration not pending"
-pass "failed migration exits non-zero, rolls back, and stays pending"
+[ "$(fingerprint)" = "$before" ] || fail "broken migration changed the database"
+"$MIGRATE" status | grep -q "^pending   0004_broken.sql" || fail "broken migration not pending"
+rm "$TMP/0004_broken.sql"
+pass "failed migration exits non-zero and leaves the database unchanged"
 
-# A migration that ends the runner's transaction is reported as failed.
-rm "$TMP/0003_broken.sql"
-cat >"$TMP/0003_commits.sql" <<'SQL'
-CREATE TABLE selftest_committed (id integer);
+# Transaction control is rejected before any SQL runs. Each file changes
+# data first, so a commit that slipped through would show in the dump.
+n=0
+while IFS= read -r stmt; do
+	n=$((n + 1))
+	f="$TMP/0004_txn_$n.sql"
+	printf 'CREATE TABLE selftest_leak (id int);\nINSERT INTO selftest_widgets (id) VALUES (99);\n%s\n' "$stmt" >"$f"
+	expect_untouched "transaction control '$stmt'" "$f"
+	grep -q 'transaction control' "$BAK/out" || fail "'$stmt' not reported as transaction control: $(cat "$BAK/out")"
+done <<'EOF'
 COMMIT;
-SQL
-if "$MIGRATE" up >/dev/null 2>&1; then fail "self-committing migration reported success"; fi
-[ "$(query "SELECT count(*) FROM schema_migrations WHERE version = '0003'")" = 0 ] || fail "self-committing migration recorded"
-pass "migration containing COMMIT is rejected and not recorded"
+commit
+END;
+END TRANSACTION;
+ROLLBACK;
+ABORT;
+BEGIN;
+START TRANSACTION;
+SAVEPOINT s; ROLLBACK TO SAVEPOINT s;
+RELEASE SAVEPOINT s;
+PREPARE TRANSACTION 'x';
+COMMIT AND CHAIN;
+COMMIT PREPARED 'x';
+/* comment */ COMMIT;
+SELECT 1; COMMIT; SELECT 2;
+COMMIT; BEGIN; SELECT set_config('tradegrid.migration', '0004_txn.sql', true);
+EOF
+pass "rejects $n forms of transaction control with no database change"
+
+# psql metacommands are rejected before any SQL runs. \! would create a file
+# in the container if it ever ran.
+marker=/tmp/tg_selftest_$$
+n=0
+while IFS= read -r stmt; do
+	n=$((n + 1))
+	f="$TMP/0004_meta_$n.sql"
+	printf 'CREATE TABLE selftest_leak (id int);\n%s\nSELECT 1 / 0;\n' "$stmt" >"$f"
+	expect_untouched "metacommand '$stmt'" "$f"
+	grep -q 'metacommand' "$BAK/out" || fail "'$stmt' not reported as a metacommand: $(cat "$BAK/out")"
+done <<EOF
+\\set ON_ERROR_STOP off
+\\q
+\\quit
+\\! touch $marker
+\\i /dev/null
+\\connect postgres
+\\if false
+SELECT 'COMMIT' \\gexec
+\\o /dev/null
+\\copy selftest_widgets to stdout
+EOF
+if compose exec -T postgres test -e "$marker" </dev/null; then fail "\\! ran a shell command"; fi
+pass "rejects $n psql metacommands with no database change"
+
+# Malformed files are rejected before any SQL runs.
+printf 'CREATE TABLE selftest_leak (id int);\nSELECT $x$ COMMIT;\n' >"$TMP/0004_dollar.sql"
+expect_untouched "unterminated dollar quote" "$TMP/0004_dollar.sql"
+printf "CREATE TABLE selftest_leak (id int);\nSELECT 'COMMIT;\n" >"$TMP/0004_quote.sql"
+expect_untouched "unterminated string" "$TMP/0004_quote.sql"
+printf -- '-- nothing here\n' >"$TMP/0004_empty.sql"
+expect_untouched "empty migration" "$TMP/0004_empty.sql"
+printf 'CREATE TABLE selftest_leak (id int);\0COMMIT;\n' >"$TMP/0004_nul.sql"
+expect_untouched "NUL byte" "$TMP/0004_nul.sql"
+pass "rejects unterminated quotes, empty files, and NUL bytes"
+
+# One bad file stops the run before an earlier good file is applied.
+echo "CREATE TABLE selftest_good (id int);" >"$TMP/0004_good.sql"
+printf 'CREATE TABLE selftest_leak (id int);\nCOMMIT;\n' >"$TMP/0005_bad.sql"
+expect_untouched "preflight" "$TMP/0005_bad.sql"
+rm "$TMP/0004_good.sql"
+pass "checks every pending file before applying any"
+
+# An unreadable file fails instead of being recorded as applied. Skipped as
+# root, which can read it anyway.
+echo "CREATE TABLE selftest_unreadable (id int);" >"$TMP/0004_unreadable.sql"
+chmod 000 "$TMP/0004_unreadable.sql"
+if [ -r "$TMP/0004_unreadable.sql" ]; then
+	rm -f "$TMP/0004_unreadable.sql"
+	echo "skip: unreadable migration (running as root)"
+else
+	expect_untouched "unreadable file" "$TMP/0004_unreadable.sql"
+	pass "unreadable migration fails and records nothing"
+fi
+
+# The server enforces the same rules if the static check is bypassed: the
+# file runs through EXECUTE, which refuses transaction control, and psql never
+# sees metacommands.
+export TRADEGRID_MIGRATE_SELFTEST_SKIP_CHECK=1
+n=0
+while IFS= read -r stmt; do
+	n=$((n + 1))
+	f="$TMP/0004_server_$n.sql"
+	printf 'CREATE TABLE selftest_leak (id int);\nINSERT INTO selftest_widgets (id) VALUES (99);\n%s\n' "$stmt" >"$f"
+	expect_untouched "server guard '$stmt'" "$f"
+done <<EOF
+COMMIT;
+END;
+ROLLBACK; CREATE TABLE selftest_after (id int);
+COMMIT; BEGIN; SELECT set_config('tradegrid.migration', '0004_server.sql', true);
+SAVEPOINT s;
+DO \$\$ BEGIN COMMIT; END \$\$;
+\\set ON_ERROR_STOP off
+\\q
+\\! touch $marker
+EOF
+unset TRADEGRID_MIGRATE_SELFTEST_SKIP_CHECK
+if compose exec -T postgres test -e "$marker" </dev/null; then fail "\\! ran a shell command"; fi
+pass "server rejects $n bypass attempts even without the static check"
+
+# Losing the connection mid-migration fails and leaves nothing behind.
+printf 'CREATE TABLE selftest_leak (id int);\nSELECT pg_sleep(60);\n' >"$TMP/0004_killed.sql"
+before=$(fingerprint)
+"$MIGRATE" up >"$BAK/killed.log" 2>&1 &
+BG=$!
+i=0
+until [ "$(query "SELECT pg_terminate_backend(pid) FROM pg_stat_activity
+                 WHERE datname = current_database() AND pid <> pg_backend_pid() AND query LIKE '%pg_sleep(60)%'")" = t ]; do
+	i=$((i + 1))
+	[ $i -lt 100 ] || fail "migration never started"
+	sleep 0.2
+done
+if wait "$BG"; then fail "up reported success after its connection was killed"; fi
+BG=
+[ "$(fingerprint)" = "$before" ] || fail "killed migration changed the database"
+rm "$TMP/0004_killed.sql"
+pass "killed connection fails and leaves the database unchanged"
 
 # History must match the files.
-rm "$TMP/0003_commits.sql"
 cp "$TMP/0001_create_widgets.sql" "$BAK/0001.sql"
 echo "-- edited" >>"$TMP/0001_create_widgets.sql"
 if "$MIGRATE" status >/dev/null 2>&1; then fail "status ignored a modified migration"; fi
@@ -112,6 +298,7 @@ pass "missing applied migrations block status and up"
 # Versions cannot be applied out of order or reused, and names are checked.
 echo "SELECT 1;" >"$TMP/0000_late.sql"
 if "$MIGRATE" up >/dev/null 2>&1; then fail "applied a version older than the latest"; fi
+"$MIGRATE" status 2>/dev/null | grep -q "^BLOCKED   0000_late.sql" || fail "status did not flag BLOCKED"
 rm "$TMP/0000_late.sql"
 echo "SELECT 1;" >"$TMP/0002_duplicate.sql"
 if "$MIGRATE" up >/dev/null 2>&1; then fail "accepted a reused version"; fi
@@ -119,28 +306,113 @@ rm "$TMP/0002_duplicate.sql"
 echo "SELECT 1;" >"$TMP/4_Bad-Name.sql"
 if "$MIGRATE" up >/dev/null 2>&1; then fail "accepted a bad file name"; fi
 rm "$TMP/4_Bad-Name.sql"
+printf 'SELECT 1;\nCOMMIT;\n' >"$TMP/0009_invalid.sql"
+if "$MIGRATE" status >/dev/null 2>&1; then fail "status accepted an invalid pending migration"; fi
+"$MIGRATE" status 2>/dev/null | grep -q "^INVALID   0009_invalid.sql" || fail "status did not flag INVALID"
+rm "$TMP/0009_invalid.sql"
 "$MIGRATE" status >/dev/null || fail "status after restoring files"
-pass "rejects out-of-order versions, reused versions, and bad names"
+pass "rejects out-of-order versions, reused versions, bad names, and invalid files"
 
-# Concurrent runs apply a migration once and both succeed.
+# Concurrent runs apply a migration once and all succeed.
 reset_db
 cat >"$TMP/0001_slow.sql" <<'SQL'
 SELECT pg_sleep(1);
 CREATE TABLE selftest_slow (id integer);
 SQL
-"$MIGRATE" up >"$BAK/a.log" 2>&1 &
-a=$!
-"$MIGRATE" up >"$BAK/b.log" 2>&1 &
-b=$!
-wait $a || fail "concurrent run A: $(cat "$BAK/a.log")"
-wait $b || fail "concurrent run B: $(cat "$BAK/b.log")"
-[ "$(query "SELECT count(*) FROM schema_migrations")" = 1 ] || fail "concurrent runs recorded twice"
+echo "CREATE TABLE selftest_after_slow (id integer);" >"$TMP/0002_after.sql"
+pids=
+for r in a b c; do
+	"$MIGRATE" up >"$BAK/$r.log" 2>&1 &
+	pids="$pids $!"
+done
+BG=$pids
+for pid in $pids; do
+	wait "$pid" || fail "concurrent run failed: $(cat "$BAK"/?.log)"
+done
+BG=
+[ "$(query "SELECT string_agg(version, ',' ORDER BY version) FROM schema_migrations")" = "0001,0002" ] ||
+	fail "concurrent runs recorded the wrong history"
+[ "$(cat "$BAK"/?.log | grep -c '^applying  0001_slow.sql')" -ge 1 ] || fail "no run applied 0001"
 pass "concurrent runs apply each migration once"
 
-# Destructive commands only accept isolated _test databases.
-for name in tradegrid postgres tradegrid_test_db Tradegrid_test; do
+# The ordering and conflict checks are repeated under the lock. A helper
+# session holds the migration lock until a runner is waiting for it, then
+# records a row the runner did not see when it read history.
+race() {
+	row=$1
+	compose exec -T postgres sh -c 'exec psql -X -q -v ON_ERROR_STOP=1 -U "$POSTGRES_USER" -d "$1"' sh "$TEST_DB" >/dev/null <<SQL &
+SELECT pg_advisory_lock(hashtext('tradegrid.migrate'));
+DO \$\$
+DECLARE started timestamptz := clock_timestamp();
+BEGIN
+	WHILE NOT EXISTS (SELECT 1 FROM pg_locks WHERE locktype = 'advisory' AND NOT granted
+	                  AND database = (SELECT oid FROM pg_database WHERE datname = current_database())) LOOP
+		IF clock_timestamp() - started > interval '30 seconds' THEN
+			RAISE EXCEPTION 'no runner waited for the lock';
+		END IF;
+		PERFORM pg_sleep(0.05);
+	END LOOP;
+END
+\$\$;
+INSERT INTO schema_migrations (version, name, checksum) VALUES $row;
+SELECT pg_advisory_unlock(hashtext('tradegrid.migrate'));
+SQL
+	helper=$!
+	BG=$helper
+	"$MIGRATE" up >"$BAK/race.log" 2>&1
+	race_status=$?
+	wait "$helper" || fail "lock helper failed"
+	BG=
+	return $race_status
+}
+
+echo "CREATE TABLE selftest_race (id integer);" >"$TMP/0003_race.sql"
+if race "('0004', '0004_elsewhere.sql', repeat('0', 64))"; then
+	fail "applied 0003 after a concurrent run recorded 0004"
+fi
+grep -q "older than the latest applied version 0004" "$BAK/race.log" || fail "race: $(cat "$BAK/race.log")"
+[ "$(query "SELECT to_regclass('selftest_race') IS NULL")" = t ] || fail "out-of-order migration ran"
+query "DELETE FROM schema_migrations WHERE version = '0004'" >/dev/null
+pass "out-of-order check holds against a concurrent run"
+
+if race "('0003', '0003_race.sql', repeat('0', 64))"; then
+	fail "accepted version 0003 recorded with another checksum"
+fi
+grep -q "already recorded for a different file or checksum" "$BAK/race.log" || fail "race: $(cat "$BAK/race.log")"
+[ "$(query "SELECT to_regclass('selftest_race') IS NULL")" = t ] || fail "conflicting migration ran"
+query "DELETE FROM schema_migrations WHERE version = '0003'" >/dev/null
+pass "conflicting concurrent version is rejected"
+
+race "('0003', '0003_race.sql', '$(sha "$TMP/0003_race.sql")')" || fail "race skip: $(cat "$BAK/race.log")"
+grep -q "skipping  0003_race.sql" "$BAK/race.log" || fail "race skip: $(cat "$BAK/race.log")"
+[ "$(query "SELECT to_regclass('selftest_race') IS NULL")" = t ] || fail "skipped migration ran"
+pass "identical concurrent version is skipped, not rerun"
+
+# up confirms each tracking row from a new connection after the commit, so a
+# row that does not match the file that ran is reported.
+reset_db
+cat >"$TMP/0001_tamper.sql" <<'SQL'
+CREATE FUNCTION selftest_tamper() RETURNS trigger LANGUAGE plpgsql AS $$
+BEGIN
+	NEW.checksum := 'tampered';
+	RETURN NEW;
+END;
+$$;
+CREATE TRIGGER selftest_tamper BEFORE INSERT ON schema_migrations
+	FOR EACH ROW EXECUTE FUNCTION selftest_tamper();
+SQL
+if "$MIGRATE" up >"$BAK/out" 2>&1; then fail "up accepted a tracking row with the wrong checksum"; fi
+grep -q "not recorded in schema_migrations with checksum" "$BAK/out" || fail "tamper: $(cat "$BAK/out")"
+if "$MIGRATE" status >/dev/null 2>&1; then fail "status accepted a tampered checksum"; fi
+pass "up and status detect a tracking row that does not match the file"
+
+# Destructive commands only accept isolated _test databases with names that
+# PostgreSQL will not truncate.
+long=$(printf 'a%.0s' $(seq 1 60))_test
+for name in tradegrid postgres tradegrid_test_db Tradegrid_test "$long" "x_test; DROP DATABASE tradegrid"; do
 	if "$MIGRATE" drop-test-db "$name" >/dev/null 2>&1; then fail "drop-test-db accepted $name"; fi
+	if "$MIGRATE" create-test-db "$name" >/dev/null 2>&1; then fail "create-test-db accepted $name"; fi
 done
-pass "drop-test-db refuses databases not named *_test"
+pass "test database commands refuse names not ending in _test or longer than 63 characters"
 
 echo "all migration self-tests passed"

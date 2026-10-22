@@ -1,0 +1,80 @@
+{
+  "name": "seed",
+  "description": "A fresh server: two demo accounts, two symbols, empty books, no orders or executions.",
+  "after": {
+    "GET /api/v1/accounts": {
+      "accounts": [
+        {
+          "userId": "alice",
+          "displayName": "Alice (demo)",
+          "cash": {
+            "total": 10000000,
+            "reserved": 0,
+            "available": 10000000
+          },
+          "positions": [
+            {
+              "symbol": "AAPL",
+              "total": 100,
+              "reserved": 0,
+              "available": 100
+            },
+            {
+              "symbol": "MSFT",
+              "total": 100,
+              "reserved": 0,
+              "available": 100
+            }
+          ]
+        },
+        {
+          "userId": "bob",
+          "displayName": "Bob (demo)",
+          "cash": {
+            "total": 10000000,
+            "reserved": 0,
+            "available": 10000000
+          },
+          "positions": [
+            {
+              "symbol": "AAPL",
+              "total": 100,
+              "reserved": 0,
+              "available": 100
+            },
+            {
+              "symbol": "MSFT",
+              "total": 100,
+              "reserved": 0,
+              "available": 100
+            }
+          ]
+        }
+      ]
+    },
+    "GET /api/v1/symbols": {
+      "symbols": [
+        {
+          "symbol": "AAPL",
+          "name": "Apple Inc."
+        },
+        {
+          "symbol": "MSFT",
+          "name": "Microsoft Corporation"
+        }
+      ]
+    },
+    "GET /api/v1/orderbook?symbol=AAPL": {
+      "symbol": "AAPL",
+      "asOfSequence": 0,
+      "bids": [],
+      "asks": []
+    },
+    "GET /api/v1/orders?userId=alice": {
+      "orders": []
+    },
+    "GET /api/v1/executions?symbol=AAPL": {
+      "executions": []
+    }
+  }
+}

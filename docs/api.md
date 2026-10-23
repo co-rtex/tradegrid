@@ -271,7 +271,7 @@ Errors returned by the service wrap a typed error carrying the `code` above, so 
 
 ## Database Mapping
 
-The runtime exchange does not use the database in Sprint 2. For [#12](https://github.com/co-rtex/tradegrid/issues/12)/[#39](https://github.com/co-rtex/tradegrid/issues/39), the schema should be able to store exactly the resources above: integer cents and shares, both execution counterparties (order and user), original and remaining quantity with status, and the order and execution `sequence` values used for ordering. Column names and table layout are #12's decision.
+The runtime exchange does not use the database in Sprint 2. For [#12](https://github.com/co-rtex/tradegrid/issues/12)/[#39](https://github.com/co-rtex/tradegrid/issues/39), the schema should be able to store exactly the resources above: integer cents and shares, both execution counterparties (order and user), original and remaining quantity with status, and the order and execution `sequence` values used for ordering. Column names and table layout are #12's decision, documented in [PostgreSQL Schema Design](database-schema.md).
 
 ## Fixtures
 

@@ -180,7 +180,8 @@ directory (`tradegrid-migrate.*` under `$TMPDIR`) behind. `COMMIT` is still
 never sent after `up` has gone, but a migration whose `COMMIT` was already sent
 may have committed. Run `status` to find out.
 - Keep the core schema in [#39](https://github.com/co-rtex/tradegrid/issues/39),
-  following the [#12](https://github.com/co-rtex/tradegrid/issues/12) design and
+  following the [#12](https://github.com/co-rtex/tradegrid/issues/12) design in
+  [docs/database-schema.md](../../docs/database-schema.md) and
   the resources in [docs/api.md](../../docs/api.md#database-mapping).
 
 ## Test databases

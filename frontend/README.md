@@ -45,11 +45,14 @@ Run all commands below from `frontend/` as well.
 ```bash
 npm run lint
 npm run typecheck
+npm test
 npm run build
 ```
 
 - `lint` runs Oxlint to check for common code and React mistakes.
 - `typecheck` checks the application and Vite configuration with TypeScript.
+- `test` runs the component tests once and exits non-zero if any fail. CI runs
+  this command. See [Tests](#tests).
 - `build` runs the same TypeScript checks, then creates a production bundle in
   `dist/`. Do not commit this generated directory.
 
@@ -62,9 +65,32 @@ npm run preview
 Open the URL printed in the terminal (usually `http://localhost:4173`). Stop it
 with **Ctrl+C**. This is a local preview, not a production hosting service.
 
-There is no automated test suite yet. Run the checks above and verify that each
-navigation item updates the active highlight and page heading. Tab through the
-wordmark and navigation buttons and use Enter or Space to activate them.
+## Tests
+
+Component tests use [Vitest](https://vitest.dev/) with
+[React Testing Library](https://testing-library.com/docs/react-testing-library/intro/)
+in a simulated browser (jsdom). No backend or browser is needed.
+
+```bash
+npm test             # run every test once (what CI runs)
+npm run test:watch   # rerun affected tests as you save files; press q to quit
+npx vitest run src/components/TopNavigation.test.tsx   # run one file
+```
+
+Put a test next to the code it covers, named `*.test.tsx` (or `*.test.ts`), as in
+`src/components/TopNavigation.test.tsx`. Write tests the way a person uses the
+page:
+
+- Find elements by role and accessible name, for example
+  `screen.getByRole('button', { name: 'Orders' })`, rather than by CSS class.
+- Interact with `userEvent` (clicks, typing, Tab, Enter) and await each action.
+- Assert what a user or parent component can observe: visible text,
+  `aria-current`, focus, and callback arguments from `vi.fn()`. Avoid snapshots.
+
+`src/test/setup.ts` adds matchers such as `toBeInTheDocument` and
+`toHaveAttribute` and clears the page after each test. Test configuration is in
+`vitest.config.ts`, separate from `vite.config.ts`, so test tools never reach
+the production bundle.
 
 ## Directory structure
 
@@ -75,15 +101,20 @@ frontend/
   src/
     main.tsx         Mounts React into the HTML page
     App.tsx          Minimal app shell; compose future components here
+    App.test.tsx     App-level navigation test
     App.css          App shell styles
     index.css        Global styles and basic browser defaults
     components/
       TopNavigation.tsx Reusable top navigation and its props
       TopNavigation.css Navigation styles and responsive layout
+      TopNavigation.test.tsx Behavioral tests for the navigation
+    test/
+      setup.ts       Test setup: DOM matchers and cleanup
   index.html         HTML entry point and page title
   package.json       Dependencies and npm commands
   package-lock.json  Locked dependency versions; commit dependency updates
   vite.config.ts     Vite configuration with the React plugin
+  vitest.config.ts   Test runner configuration (jsdom, setup file)
   tsconfig*.json     TypeScript settings for the app and build configuration
   .oxlintrc.json     Linter configuration
 ```

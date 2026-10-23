@@ -52,6 +52,8 @@ Publishes order-book and execution updates to clients.
 ### Storage
 Persists accounts, orders, executions, positions, and related state.
 
+See [PostgreSQL Schema Design](database-schema.md) for the tables, keys, constraints, and indexes.
+
 ## Sprint 2 Contract
 
 See [Sprint 2 API and Exchange Contract](api.md) for the REST endpoints, JSON shapes, error codes, numeric bounds, demo accounts, reservation and settlement rules, and the shared [fixtures](fixtures/).

@@ -3,6 +3,7 @@ package orders
 import (
 	"encoding/json"
 	"errors"
+	"math"
 	"testing"
 	"time"
 )
@@ -73,6 +74,7 @@ func TestNewRejectsBadParams(t *testing.T) {
 		{"negative quantity", func(p *Params) { p.Quantity = -5 }, ErrInvalidQuantity},
 		{"limit without price", func(p *Params) { p.Price = 0 }, ErrInvalidPrice},
 		{"negative price", func(p *Params) { p.Price = -1 }, ErrInvalidPrice},
+		{"most negative price", func(p *Params) { p.Price = math.MinInt64 }, ErrInvalidPrice},
 		{"market with price", func(p *Params) { p.Type = TypeMarket }, ErrInvalidPrice},
 		{"missing timestamp", func(p *Params) { p.CreatedAt = time.Time{} }, ErrMissingTime},
 	}
@@ -90,6 +92,18 @@ func TestNewRejectsBadParams(t *testing.T) {
 				t.Errorf("New() returned %v on error, want zero Order", got)
 			}
 		})
+	}
+}
+
+// One cent is the smallest positive limit price, so it pins the boundary that
+// the zero and negative cases approach from below.
+func TestNewAcceptsOneCentLimitPrice(t *testing.T) {
+	p := validParams()
+	p.Price = 1
+
+	o := mustNew(t, p)
+	if o.Price != 1 {
+		t.Errorf("Price = %d, want 1", o.Price)
 	}
 }
 

@@ -18,6 +18,11 @@ Verify Git:
 git --version
 ```
 
+For local application setup, current feature status, and the two-account
+fixture scenarios, read the [Developer Setup and Demo Guide](demo.md). It
+explains which steps work in the live application and which behaviors are
+defined for work still in progress.
+
 ## Your First Contribution
 
 ### 1. Clone the repository

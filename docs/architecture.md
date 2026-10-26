@@ -58,6 +58,16 @@ See [PostgreSQL Schema Design](database-schema.md) for the tables, keys, constra
 
 See [Sprint 2 API and Exchange Contract](api.md) for the REST endpoints, JSON shapes, error codes, numeric bounds, demo accounts, reservation and settlement rules, and the shared [fixtures](fixtures/).
 
+## Current Integration Status
+
+The matching, order, risk, account, execution, and in-memory exchange packages
+are implemented and tested independently. The running backend currently serves
+only `GET /health`; the Sprint 2 REST trading routes are not wired into it yet.
+The frontend is currently an application shell and does not connect to the
+backend. The [Developer Setup and Demo Guide](demo.md) separates current
+startup steps from fixture-defined trading behavior and lists the remaining
+integration work.
+
 ## Architectural Principle
 
 Start simple and modular. We will not introduce distributed infrastructure merely to make the architecture look more complex. New services should solve a demonstrated problem.

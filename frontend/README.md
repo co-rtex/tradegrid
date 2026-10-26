@@ -3,6 +3,9 @@
 A minimal React + TypeScript application built with [Vite](https://vite.dev/guide/).
 The current app displays TradeGrid branding. It is intentionally small so upcoming
 frontend issues can build on it. No backend or environment variables are needed.
+It does not yet include a TradingDesk, server connection, or manual Refresh
+control. See the repository's [Developer Setup and Demo Guide](../docs/demo.md)
+for the current application status and the fixture-defined trading scenarios.
 
 ## Prerequisites
 

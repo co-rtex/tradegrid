@@ -189,12 +189,19 @@ func TestRejectionsPublishNothing(t *testing.T) {
 		{"missing symbol", SubmitRequest{UserID: "bob", Side: "BUY", Type: "LIMIT", Price: 1, Quantity: 1}, CodeMissingField, "symbol"},
 		{"missing side", SubmitRequest{UserID: "bob", Symbol: "AAPL", Type: "LIMIT", Price: 1, Quantity: 1}, CodeMissingField, "side"},
 		{"missing type", SubmitRequest{UserID: "bob", Symbol: "AAPL", Side: "BUY", Price: 1, Quantity: 1}, CodeMissingField, "type"},
+		{"unknown symbol", SubmitRequest{UserID: "bob", Symbol: "GOOG", Side: "BUY", Type: "LIMIT", Price: 1, Quantity: 1}, CodeUnknownSymbol, "symbol"},
+		{"lowercase symbol", SubmitRequest{UserID: "bob", Symbol: "aapl", Side: "BUY", Type: "LIMIT", Price: 1, Quantity: 1}, CodeUnknownSymbol, "symbol"},
+		{"symbol before invalid side", SubmitRequest{UserID: "bob", Symbol: "nope", Side: "buy", Type: "LIMIT", Price: 1, Quantity: 1}, CodeUnknownSymbol, "symbol"},
 		{"lowercase side", SubmitRequest{UserID: "bob", Symbol: "AAPL", Side: "buy", Type: "LIMIT", Price: 1, Quantity: 1}, CodeInvalidSide, "side"},
 		{"market order", SubmitRequest{UserID: "bob", Symbol: "AAPL", Side: "BUY", Type: "MARKET", Price: 1, Quantity: 1}, CodeUnsupportedOrderType, "type"},
+		{"market order without limit price", SubmitRequest{UserID: "bob", Symbol: "AAPL", Side: "BUY", Type: "MARKET", Price: 0, Quantity: 1}, CodeUnsupportedOrderType, "type"},
 		{"unknown type", SubmitRequest{UserID: "bob", Symbol: "AAPL", Side: "BUY", Type: "STOP", Price: 1, Quantity: 1}, CodeUnsupportedOrderType, "type"},
 		{"zero price", limit("bob", "BUY", 1, 0), CodeInvalidPrice, "price"},
 		{"price checked before quantity", limit("bob", "BUY", -1, -1), CodeInvalidPrice, "price"},
 		{"negative quantity", limit("bob", "BUY", -1, 19000), CodeInvalidQuantity, "quantity"},
+		{"price above maximum", limit("bob", "BUY", 1, MaxPrice+1), CodeInvalidPrice, "price"},
+		{"quantity above maximum", limit("bob", "BUY", MaxQuantity+1, 1), CodeInvalidQuantity, "quantity"},
+		{"price bound before invalid quantity", limit("bob", "BUY", 0, MaxPrice+1), CodeInvalidPrice, "price"},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {

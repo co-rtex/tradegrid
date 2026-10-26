@@ -1,6 +1,7 @@
 package accounts
 
 import (
+	"github.com/co-rtex/tradegrid/backend/internal/instruments"
 	"github.com/co-rtex/tradegrid/backend/internal/risk"
 )
 
@@ -11,11 +12,6 @@ const (
 	// DemoShares is each demo account's starting position in every symbol.
 	DemoShares int64 = 100
 )
-
-// demoSymbols are the tradable symbols every demo account starts with a
-// position in, sorted. They mirror the contract's symbol list; the symbol
-// catalog itself (#31) is the source of truth for validation.
-var demoSymbols = []string{"AAPL", "MSFT"}
 
 // demoAccounts lists the contracted demo accounts, sorted by user ID.
 var demoAccounts = []struct {
@@ -36,10 +32,12 @@ func Seed() *Ledger {
 		names:    make(map[string]string, len(demoAccounts)),
 		balances: make(map[string]risk.Account, len(demoAccounts)),
 	}
+	// Seed positions from the same catalog used by exchange validation.
+	catalog := instruments.List()
 	for _, d := range demoAccounts {
-		positions := make(map[string]risk.Balance, len(demoSymbols))
-		for _, symbol := range demoSymbols {
-			positions[symbol] = risk.Balance{Total: DemoShares}
+		positions := make(map[string]risk.Balance, len(catalog))
+		for _, instrument := range catalog {
+			positions[instrument.Symbol] = risk.Balance{Total: DemoShares}
 		}
 		l.userIDs = append(l.userIDs, d.userID)
 		l.names[d.userID] = d.displayName

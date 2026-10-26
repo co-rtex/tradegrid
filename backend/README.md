@@ -2,8 +2,10 @@
 
 This directory contains the Go backend. Running it starts a local HTTP server
 with a health endpoint, `GET /health`, that reports whether the server is up.
-The trading API routes in [docs/api.md](../docs/api.md) are added by later
-issues.
+The trading API contract is in [docs/api.md](../docs/api.md), but its routes
+are not implemented in the running server yet. See the repository's
+[Developer Setup and Demo Guide](../docs/demo.md) for the current server,
+fixture scenarios, and feature status.
 
 ## Prerequisites
 

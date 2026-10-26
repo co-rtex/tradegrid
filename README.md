@@ -82,3 +82,10 @@ TradeGrid is organized through the UW–Madison FinTech Club technology team. Ma
 **Fall 2026: Workshop launch / Sprint 1**
 
 TradeGrid is intentionally early. The project will be built collaboratively through the semester.
+
+## Developer Setup and Current Demo Status
+
+See the [Developer Setup and Demo Guide](docs/demo.md) to start the current
+backend health server, frontend application shell, and optional PostgreSQL
+migration foundation. It also distinguishes tested fixture behavior from the
+live features that are not yet integrated.

@@ -1,0 +1,45 @@
+.order-list {
+  width: 100%;
+}
+
+.order-list-title {
+  margin: 0 0 0.75rem;
+  font-size: 1.125rem;
+}
+
+.order-table {
+  width: 100%;
+  border-collapse: collapse;
+  text-align: left;
+  font-variant-numeric: tabular-nums;
+}
+
+.order-table th,
+.order-table td {
+  padding: 0.5rem 0.75rem;
+  border-bottom: 1px solid rgba(128, 128, 128, 0.35);
+}
+
+.order-table th {
+  font-size: 0.85rem;
+  font-weight: 600;
+}
+
+.status-badge {
+  display: inline-block;
+  padding: 0.125rem 0.5rem;
+  border: 1px solid currentColor;
+  border-radius: 999px;
+  font-size: 0.8rem;
+  white-space: nowrap;
+}
+
+/* Statuses differ by text AND by border/weight, not only by color */
+.status-badge[data-status='FILLED'] {
+  font-weight: 700;
+}
+
+.status-badge[data-status='CANCELED'],
+.status-badge[data-status='REJECTED'] {
+  border-style: dashed;
+}

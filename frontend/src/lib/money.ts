@@ -142,7 +142,7 @@ export function formatWholeShares(quantity: number): string {
 
   const suffix = quantity === 1 ? "share" : "shares";
 
-  return `${integerFormatter.format(quantity)} ${suffix}`;
+  return `${integerFormatter.format(Math.abs(quantity))} ${suffix}`;
 }
 
 /**

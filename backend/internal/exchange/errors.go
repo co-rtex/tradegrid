@@ -10,6 +10,7 @@ type Code string
 // account and funds codes; the full list lives in docs/api.md.
 const (
 	CodeMissingField         Code = "MISSING_FIELD"
+	CodeUnknownSymbol        Code = "UNKNOWN_SYMBOL"
 	CodeInvalidSide          Code = "INVALID_SIDE"
 	CodeUnsupportedOrderType Code = "UNSUPPORTED_ORDER_TYPE"
 	CodeInvalidPrice         Code = "INVALID_PRICE"

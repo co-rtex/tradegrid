@@ -20,6 +20,7 @@ import (
 	"time"
 
 	"github.com/co-rtex/tradegrid/backend/internal/executions"
+	"github.com/co-rtex/tradegrid/backend/internal/instruments"
 	"github.com/co-rtex/tradegrid/backend/internal/matching"
 	"github.com/co-rtex/tradegrid/backend/internal/orders"
 )
@@ -208,8 +209,7 @@ func (s *Service) Submit(req SubmitRequest) (SubmitResult, error) {
 	return SubmitResult{Order: c.changed[o.ID], Executions: slices.Clone(c.records)}, nil
 }
 
-// checkRequest applies the request rules in the order docs/api.md lists them
-// and returns the parsed side. #31 adds the symbol catalog and numeric bounds.
+// checkRequest applies request rules in the order docs/api.md lists them.
 func checkRequest(req SubmitRequest) (orders.Side, error) {
 	for _, f := range []struct{ name, value string }{
 		{"userId", req.UserID}, {"symbol", req.Symbol}, {"side", req.Side}, {"type", req.Type},
@@ -218,6 +218,9 @@ func checkRequest(req SubmitRequest) (orders.Side, error) {
 			return 0, newError(CodeMissingField, f.name, fmt.Errorf("%s is required", f.name))
 		}
 	}
+	if !instruments.Supported(req.Symbol) {
+		return 0, newError(CodeUnknownSymbol, "symbol", fmt.Errorf("unsupported symbol %q", req.Symbol))
+	}
 	side, err := orders.ParseSide(req.Side)
 	if err != nil {
 		return 0, newError(CodeInvalidSide, "side", err)
@@ -225,11 +228,22 @@ func checkRequest(req SubmitRequest) (orders.Side, error) {
 	if typ, err := orders.ParseType(req.Type); err != nil || typ != orders.TypeLimit {
 		return 0, newError(CodeUnsupportedOrderType, "type", fmt.Errorf("only LIMIT orders are supported, got %q", req.Type))
 	}
-	if req.Price <= 0 {
-		return 0, newError(CodeInvalidPrice, "price", fmt.Errorf("price must be positive, got %d", req.Price))
+	// Check price first as required by the API contract. A valid placeholder
+	// quantity lets the domain model perform its existing price validation.
+	params := orders.Params{ID: "validation", UserID: req.UserID, Symbol: req.Symbol,
+		Side: side, Type: orders.TypeLimit, Price: req.Price, Quantity: 1, CreatedAt: time.Unix(1, 0).UTC()}
+	if _, err := orders.New(params); err != nil {
+		return 0, newError(CodeInvalidPrice, "price", err)
 	}
-	if req.Quantity <= 0 {
-		return 0, newError(CodeInvalidQuantity, "quantity", fmt.Errorf("quantity must be positive, got %d", req.Quantity))
+	if req.Price > MaxPrice {
+		return 0, newError(CodeInvalidPrice, "price", fmt.Errorf("price must be between 1 and %d cents", MaxPrice))
+	}
+	params.Quantity = req.Quantity
+	if _, err := orders.New(params); err != nil {
+		return 0, newError(CodeInvalidQuantity, "quantity", err)
+	}
+	if req.Quantity > MaxQuantity {
+		return 0, newError(CodeInvalidQuantity, "quantity", fmt.Errorf("quantity must be between 1 and %d shares", MaxQuantity))
 	}
 	return side, nil
 }
@@ -264,6 +278,9 @@ func (s *Service) Executions(symbol, userID string, limit int) ([]executions.Rec
 	if symbol == "" {
 		return nil, newError(CodeInvalidQuery, "symbol", errors.New("symbol is required"))
 	}
+	if !instruments.Supported(symbol) {
+		return nil, newError(CodeUnknownSymbol, "symbol", fmt.Errorf("unsupported symbol %q", symbol))
+	}
 	limit, err := bound(limit, DefaultLimit, MaxLimit, "limit")
 	if err != nil {
 		return nil, err
@@ -286,6 +303,9 @@ func (s *Service) Executions(symbol, userID string, limit int) ([]executions.Rec
 func (s *Service) OrderBook(symbol string, depth int) (BookSnapshot, error) {
 	if symbol == "" {
 		return BookSnapshot{}, newError(CodeInvalidQuery, "symbol", errors.New("symbol is required"))
+	}
+	if !instruments.Supported(symbol) {
+		return BookSnapshot{}, newError(CodeUnknownSymbol, "symbol", fmt.Errorf("unsupported symbol %q", symbol))
 	}
 	depth, err := bound(depth, DefaultDepth, MaxDepth, "depth")
 	if err != nil {

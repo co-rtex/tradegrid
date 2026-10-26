@@ -37,10 +37,18 @@ function cellTexts(row: HTMLElement) {
 
 // Column positions in each row
 const SIDE = 1
+const PRICE = 2
 const ORIGINAL = 3
 const REMAINING = 4
 const FILLED = 5
 const STATUS = 6
+const ACCEPTED = 7
+
+// Expected text for a share count, written out here so the test does not
+// depend on the formatter it is checking.
+function shares(count: number) {
+  return `${count} ${count === 1 ? 'share' : 'shares'}`
+}
 
 const quantityCases: {
   status: OrderStatus
@@ -54,6 +62,7 @@ const quantityCases: {
   { status: 'FILLED', quantity: 10, remaining: 0, filled: 10, label: 'Filled' },
   { status: 'CANCELED', quantity: 20, remaining: 12, filled: 8, label: 'Canceled' },
   { status: 'REJECTED', quantity: 5, remaining: 5, filled: 0, label: 'Rejected' },
+  { status: 'PARTIALLY_FILLED', quantity: 2, remaining: 1, filled: 1, label: 'Partially filled' },
 ]
 
 const sideCases: { side: OrderDto['side']; label: string }[] = [
@@ -61,16 +70,23 @@ const sideCases: { side: OrderDto['side']; label: string }[] = [
   { side: 'SELL', label: 'Sell' },
 ]
 
+const priceCases: { price: number; text: string }[] = [
+  { price: 1, text: '$0.01' },
+  { price: 19000, text: '$190.00' },
+  { price: 19050, text: '$190.50' },
+  { price: 100000000, text: '$1,000,000.00' },
+]
+
 describe('OrderList', () => {
   it.each(quantityCases)(
-    'shows original, remaining and filled quantities and the label for $status',
+    'shows original $quantity, remaining $remaining and filled $filled for $status',
     ({ status, quantity, remaining, filled, label }) => {
       renderList({ orders: [makeOrder({ status, quantity, remaining })] })
 
       const cells = cellTexts(bodyRows()[0])
-      expect(cells[ORIGINAL]).toBe(String(quantity))
-      expect(cells[REMAINING]).toBe(String(remaining))
-      expect(cells[FILLED]).toBe(String(filled))
+      expect(cells[ORIGINAL]).toBe(shares(quantity))
+      expect(cells[REMAINING]).toBe(shares(remaining))
+      expect(cells[FILLED]).toBe(shares(filled))
       expect(cells[STATUS]).toBe(label)
     },
   )
@@ -79,6 +95,30 @@ describe('OrderList', () => {
     renderList({ orders: [makeOrder({ side })] })
 
     expect(cellTexts(bodyRows()[0])[SIDE]).toBe(label)
+  })
+
+  it.each(priceCases)('formats a price of $price cents as $text', ({ price, text }) => {
+    renderList({ orders: [makeOrder({ price })] })
+
+    expect(cellTexts(bodyRows()[0])[PRICE]).toBe(text)
+  })
+
+  it('formats the acceptance time in UTC', () => {
+    renderList({ orders: [makeOrder({ createdAt: '2026-10-20T15:00:01Z' })] })
+
+    expect(cellTexts(bodyRows()[0])[ACCEPTED]).toBe('Oct 20, 2026, 3:00:01 PM UTC')
+  })
+
+  it('shows the raw value instead of crashing when a timestamp is malformed', () => {
+    renderList({ orders: [makeOrder({ createdAt: 'not-a-time' })] })
+
+    expect(cellTexts(bodyRows()[0])[ACCEPTED]).toBe('not-a-time')
+  })
+
+  it('shows the raw value instead of crashing when a price is not a whole number of cents', () => {
+    renderList({ orders: [makeOrder({ price: 1.5 })] })
+
+    expect(cellTexts(bodyRows()[0])[PRICE]).toBe('1.5')
   })
 
   it('shows the column headings in the contract order', () => {
@@ -116,14 +156,13 @@ describe('OrderList', () => {
     })
 
     const originals = bodyRows().map((row) => cellTexts(row)[ORIGINAL])
-    expect(originals).toEqual(['30', '10', '20'])
+    expect(originals).toEqual([shares(30), shares(10), shares(20)])
   })
 
   it('renders every domain status as readable text, including canceled and rejected', () => {
+    const statuses: OrderStatus[] = ['NEW', 'PARTIALLY_FILLED', 'FILLED', 'CANCELED', 'REJECTED']
     renderList({
-      orders: quantityCases.map(({ status, quantity, remaining }, index) =>
-        makeOrder({ id: `ord-${index + 1}`, status, quantity, remaining }),
-      ),
+      orders: statuses.map((status, index) => makeOrder({ id: `ord-${index + 1}`, status })),
     })
 
     const labels = bodyRows().map((row) => cellTexts(row)[STATUS])
@@ -131,10 +170,9 @@ describe('OrderList', () => {
   })
 
   it('offers no actions for any status, such as cancel buttons', () => {
+    const statuses: OrderStatus[] = ['NEW', 'PARTIALLY_FILLED', 'FILLED', 'CANCELED', 'REJECTED']
     renderList({
-      orders: quantityCases.map(({ status, quantity, remaining }, index) =>
-        makeOrder({ id: `ord-${index + 1}`, status, quantity, remaining }),
-      ),
+      orders: statuses.map((status, index) => makeOrder({ id: `ord-${index + 1}`, status })),
     })
 
     expect(screen.queryAllByRole('button')).toHaveLength(0)
@@ -166,7 +204,4 @@ describe('OrderList', () => {
     expect(screen.getByRole('alert')).toHaveTextContent('Network down')
     expect(screen.queryByRole('table')).not.toBeInTheDocument()
   })
-
-  // TODO: once the shared formatters from #40 are merged, add cases that check the
-  // formatted price (19050 -> $190.50) and the formatted acceptance time.
 })

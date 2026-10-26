@@ -1,4 +1,5 @@
 import './OrderList.css'
+import { formatUsdCents, formatUtcTime, formatWholeShares } from '../lib/money'
 
 export type OrderStatus =
   | 'NEW'
@@ -43,6 +44,16 @@ function filledQuantity(order: OrderDto) {
   return order.quantity - order.remaining
 }
 
+// The shared formatters throw on malformed values. Show the raw value instead
+// of letting one bad order blank the whole page.
+function safeFormat<T>(format: (value: T) => string, value: T): string {
+  try {
+    return format(value)
+  } catch {
+    return String(value)
+  }
+}
+
 export default function OrderList({
   orders,
   accountName,
@@ -83,16 +94,16 @@ export default function OrderList({
                   {order.side === 'BUY' ? 'Buy' : 'Sell'}
                 </td>
                 {/* TODO: use the shared formatters from #40 for price and time */}
-                <td>{order.price}</td>
-                <td>{order.quantity}</td>
-                <td>{order.remaining}</td>
-                <td>{filledQuantity(order)}</td>
+                <td>{safeFormat(formatUsdCents, order.price)}</td>
+                <td>{safeFormat(formatWholeShares, order.quantity)}</td>
+                <td>{safeFormat(formatWholeShares, order.remaining)}</td>
+                <td>{safeFormat(formatWholeShares, filledQuantity(order))}</td>
                 <td>
                   <span className="status-badge" data-status={order.status}>
                     {statusLabels[order.status]}
                   </span>
                 </td>
-                <td>{order.createdAt}</td>
+                <td>{safeFormat(formatUtcTime, order.createdAt)}</td>
               </tr>
             ))}
           </tbody>

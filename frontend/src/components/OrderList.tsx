@@ -79,7 +79,9 @@ export default function OrderList({
             {orders.map((order) => (
               <tr key={order.id}>
                 <td>{order.symbol}</td>
-                <td>{order.side === 'BUY' ? 'Buy' : 'Sell'}</td>
+                <td className={order.side === 'BUY' ? 'side-buy' : 'side-sell'}>
+                  {order.side === 'BUY' ? 'Buy' : 'Sell'}
+                </td>
                 {/* TODO: use the shared formatters from #40 for price and time */}
                 <td>{order.price}</td>
                 <td>{order.quantity}</td>

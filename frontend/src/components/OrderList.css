@@ -1,45 +1,96 @@
 .order-list {
+  --surface: #111827;
+  --elevated: #1f2937;
+  --border: #334155;
+  --text: #f8fafc;
+  --text-secondary: #cbd5e1;
+  --text-muted: #94a3b8;
+  --buy: #22c55e;
+  --sell: #ef4444;
+
+  box-sizing: border-box;
   width: 100%;
+  padding: 24px;
+  overflow-x: auto;
+  background-color: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  color: var(--text);
 }
 
 .order-list-title {
-  margin: 0 0 0.75rem;
-  font-size: 1.125rem;
+  margin: 0 0 16px;
+  font-size: 16px;
+  font-weight: 600;
+}
+
+.order-list > p {
+  margin: 0;
+  font-size: 14px;
+  color: var(--text-secondary);
 }
 
 .order-table {
   width: 100%;
   border-collapse: collapse;
   text-align: left;
+  font-size: 14px;
   font-variant-numeric: tabular-nums;
 }
 
-.order-table th,
-.order-table td {
-  padding: 0.5rem 0.75rem;
-  border-bottom: 1px solid rgba(128, 128, 128, 0.35);
-}
-
 .order-table th {
-  font-size: 0.85rem;
+  padding: 8px 12px;
+  border-bottom: 1px solid var(--border);
+  color: var(--text-muted);
   font-weight: 600;
-}
-
-.status-badge {
-  display: inline-block;
-  padding: 0.125rem 0.5rem;
-  border: 1px solid currentColor;
-  border-radius: 999px;
-  font-size: 0.8rem;
   white-space: nowrap;
 }
 
-/* Statuses differ by text AND by border/weight, not only by color */
+.order-table td {
+  padding: 12px;
+  border-bottom: 1px solid var(--border);
+  white-space: nowrap;
+}
+
+.order-table tbody tr:last-child td {
+  border-bottom: none;
+}
+
+.order-table tbody tr:hover {
+  background-color: var(--elevated);
+}
+
+/* Buy/sell meaning: green and red are reserved for this in the visual system.
+   The text "Buy"/"Sell" is always shown too. */
+.side-buy {
+  color: var(--buy);
+  font-weight: 600;
+}
+
+.side-sell {
+  color: var(--sell);
+  font-weight: 600;
+}
+
+/* Status is not a financial meaning, so no red/green here.
+   Statuses differ by text, weight, and border style, not only color. */
+.status-badge {
+  display: inline-block;
+  padding: 4px 8px;
+  border: 1px solid var(--text-muted);
+  border-radius: 4px;
+  background-color: var(--elevated);
+  color: var(--text-secondary);
+  font-size: 12px;
+}
+
 .status-badge[data-status='FILLED'] {
+  color: var(--text);
   font-weight: 700;
 }
 
 .status-badge[data-status='CANCELED'],
 .status-badge[data-status='REJECTED'] {
   border-style: dashed;
+  color: var(--text-muted);
 }

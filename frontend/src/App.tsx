@@ -1,23 +1,9 @@
-import { useState } from 'react'
-import TopNavigation, { type NavigationItem } from './components/TopNavigation'
-import './App.css'
+import "./App.css";
+
+import OrderEntryForm from "./components/OrderEntryForm";
 
 function App() {
-  const [activeItem, setActiveItem] = useState<NavigationItem>('Dashboard')
-
-  return (
-    <>
-      <TopNavigation activeItem={activeItem} onNavigate={setActiveItem} />
-      <main className="app-shell">
-        <p className="app-community">UW–Madison FinTech Club</p>
-        <h1>{activeItem}</h1>
-        <p className="app-description">
-          A student-built simulated trading platform.
-        </p>
-        <p className="app-status">Built together. One contribution at a time.</p>
-      </main>
-    </>
-  )
+  return <OrderEntryForm />;
 }
 
-export default App
+export default App;

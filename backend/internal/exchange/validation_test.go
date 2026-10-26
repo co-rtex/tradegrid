@@ -9,6 +9,7 @@ import (
 )
 
 func TestSubmissionBoundary(t *testing.T) {
+	// Check inclusive endpoints, values just outside them, and int64 extremes.
 	for _, tc := range []struct {
 		name            string
 		price, quantity int64
@@ -38,6 +39,7 @@ func TestSubmissionBoundary(t *testing.T) {
 			if !errors.As(err, &boundaryErr) || boundaryErr.Code != tc.code {
 				t.Fatalf("error = %v, want code %s", err, tc.code)
 			}
+			// Nonpositive values must retain the original order-model error.
 			if tc.cause != nil && !errors.Is(err, tc.cause) {
 				t.Fatalf("error = %v, want underlying %v", err, tc.cause)
 			}

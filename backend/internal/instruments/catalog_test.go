@@ -11,6 +11,7 @@ func TestCatalog(t *testing.T) {
 	if !reflect.DeepEqual(got, want) {
 		t.Fatalf("catalog = %#v, want %#v", got, want)
 	}
+	// A caller may modify its copy without changing the shared catalog.
 	got[0].Symbol = "CHANGED"
 	if !reflect.DeepEqual(List(), want) {
 		t.Fatal("caller modified the catalog")

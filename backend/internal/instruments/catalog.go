@@ -7,6 +7,8 @@ type Instrument struct {
 	Name   string `json:"name"`
 }
 
+// Keep entries sorted by symbol: List supplies the API's stable display order
+// and Seed uses the same catalog when creating account positions.
 var catalog = [...]Instrument{
 	{Symbol: "AAPL", Name: "Apple Inc."},
 	{Symbol: "MSFT", Name: "Microsoft Corporation"},
@@ -14,6 +16,7 @@ var catalog = [...]Instrument{
 
 // List returns the catalog in symbol order. The returned slice is independent.
 func List() []Instrument {
+	// Copy the array into a new slice so callers cannot alter future results.
 	return append([]Instrument(nil), catalog[:]...)
 }
 

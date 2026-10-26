@@ -194,6 +194,7 @@ func TestRejectionsPublishNothing(t *testing.T) {
 		{"symbol before invalid side", SubmitRequest{UserID: "bob", Symbol: "nope", Side: "buy", Type: "LIMIT", Price: 1, Quantity: 1}, CodeUnknownSymbol, "symbol"},
 		{"lowercase side", SubmitRequest{UserID: "bob", Symbol: "AAPL", Side: "buy", Type: "LIMIT", Price: 1, Quantity: 1}, CodeInvalidSide, "side"},
 		{"market order", SubmitRequest{UserID: "bob", Symbol: "AAPL", Side: "BUY", Type: "MARKET", Price: 1, Quantity: 1}, CodeUnsupportedOrderType, "type"},
+		{"market order without limit price", SubmitRequest{UserID: "bob", Symbol: "AAPL", Side: "BUY", Type: "MARKET", Price: 0, Quantity: 1}, CodeUnsupportedOrderType, "type"},
 		{"unknown type", SubmitRequest{UserID: "bob", Symbol: "AAPL", Side: "BUY", Type: "STOP", Price: 1, Quantity: 1}, CodeUnsupportedOrderType, "type"},
 		{"zero price", limit("bob", "BUY", 1, 0), CodeInvalidPrice, "price"},
 		{"price checked before quantity", limit("bob", "BUY", -1, -1), CodeInvalidPrice, "price"},

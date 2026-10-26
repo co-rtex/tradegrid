@@ -32,8 +32,9 @@ func Seed() *Ledger {
 		names:    make(map[string]string, len(demoAccounts)),
 		balances: make(map[string]risk.Account, len(demoAccounts)),
 	}
+	// Seed positions from the same catalog used by exchange validation.
+	catalog := instruments.List()
 	for _, d := range demoAccounts {
-		catalog := instruments.List()
 		positions := make(map[string]risk.Balance, len(catalog))
 		for _, instrument := range catalog {
 			positions[instrument.Symbol] = risk.Balance{Total: DemoShares}

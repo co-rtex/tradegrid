@@ -132,6 +132,7 @@ func (s *Service) Submit(req SubmitRequest) (SubmitResult, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
+	// Reject invalid input before allocating a sequence or touching the book.
 	side, err := checkRequest(req)
 	if err != nil {
 		return SubmitResult{}, err
@@ -218,6 +219,7 @@ func checkRequest(req SubmitRequest) (orders.Side, error) {
 			return 0, newError(CodeMissingField, f.name, fmt.Errorf("%s is required", f.name))
 		}
 	}
+	// Match the catalog exactly; lowercase and padded symbols are not aliases.
 	if !instruments.Supported(req.Symbol) {
 		return 0, newError(CodeUnknownSymbol, "symbol", fmt.Errorf("unsupported symbol %q", req.Symbol))
 	}
@@ -225,6 +227,7 @@ func checkRequest(req SubmitRequest) (orders.Side, error) {
 	if err != nil {
 		return 0, newError(CodeInvalidSide, "side", err)
 	}
+	// MARKET is valid in the domain model but this exchange only matches LIMIT.
 	if typ, err := orders.ParseType(req.Type); err != nil || typ != orders.TypeLimit {
 		return 0, newError(CodeUnsupportedOrderType, "type", fmt.Errorf("only LIMIT orders are supported, got %q", req.Type))
 	}
@@ -233,14 +236,22 @@ func checkRequest(req SubmitRequest) (orders.Side, error) {
 	params := orders.Params{ID: "validation", UserID: req.UserID, Symbol: req.Symbol,
 		Side: side, Type: orders.TypeLimit, Price: req.Price, Quantity: 1, CreatedAt: time.Unix(1, 0).UTC()}
 	if _, err := orders.New(params); err != nil {
-		return 0, newError(CodeInvalidPrice, "price", err)
+		if errors.Is(err, orders.ErrInvalidPrice) {
+			return 0, newError(CodeInvalidPrice, "price", err)
+		}
+		return 0, internal(err)
 	}
 	if req.Price > MaxPrice {
 		return 0, newError(CodeInvalidPrice, "price", fmt.Errorf("price must be between 1 and %d cents", MaxPrice))
 	}
+	// Recheck with the real quantity. Wrapping preserves errors.Is so callers
+	// can identify the domain model's validation error as well as the API code.
 	params.Quantity = req.Quantity
 	if _, err := orders.New(params); err != nil {
-		return 0, newError(CodeInvalidQuantity, "quantity", err)
+		if errors.Is(err, orders.ErrInvalidQuantity) {
+			return 0, newError(CodeInvalidQuantity, "quantity", err)
+		}
+		return 0, internal(err)
 	}
 	if req.Quantity > MaxQuantity {
 		return 0, newError(CodeInvalidQuantity, "quantity", fmt.Errorf("quantity must be between 1 and %d shares", MaxQuantity))

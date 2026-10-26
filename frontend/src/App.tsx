@@ -1,6 +1,7 @@
 import { useState } from 'react'
 import TopNavigation, { type NavigationItem } from './components/TopNavigation'
 import './App.css'
+import PortfolioSummary from './components/PortfolioSummary'
 
 function App() {
   const [activeItem, setActiveItem] = useState<NavigationItem>('Dashboard')
@@ -15,6 +16,7 @@ function App() {
           A student-built simulated trading platform.
         </p>
         <p className="app-status">Built together. One contribution at a time.</p>
+        <PortfolioSummary />
       </main>
     </>
   )

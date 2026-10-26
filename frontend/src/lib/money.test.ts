@@ -52,13 +52,16 @@ describe("parseUsdToCents", () => {
   ] as const)(
     "rejects %s with error %s",
     (input, expectedCode) => {
+      let caught: unknown;
+
       try {
         parseUsdToCents(input);
-        expect.fail("Expected parser to reject input");
       } catch (error) {
-        expect(error).toBeInstanceOf(MoneyInputError);
-        expect((error as MoneyInputError).code).toBe(expectedCode);
+        caught = error;
       }
+
+      expect(caught).toBeInstanceOf(MoneyInputError);
+      expect((caught as MoneyInputError).code).toBe(expectedCode);
     },
   );
 
@@ -143,9 +146,10 @@ describe("formatUsdCents", () => {
   });
 
   it("produces consistent formatting across calls", () => {
-    expect(formatUsdCents(123456)).toBe(
-      formatUsdCents(123456),
-    );
+    const first = formatUsdCents(123456);
+    const second = formatUsdCents(123456);
+
+    expect(first).toBe(second);
   });
 });
 
@@ -158,6 +162,10 @@ describe("formatWholeShares", () => {
     [1000000, "1,000,000 shares"],
   ])("formats %i as %s", (quantity, expected) => {
     expect(formatWholeShares(quantity)).toBe(expected);
+  });
+
+  it("formats negative zero as zero shares", () => {
+    expect(formatWholeShares(-0)).toBe("0 shares");
   });
 
   it("rejects negative quantities", () => {

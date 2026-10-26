@@ -37,8 +37,8 @@ export interface OrderListProps {
   error?: string | null
 }
 
-// Filled = original quantity minus remaining.
-// (Waiting on a maintainer to confirm this is OK for "no local fill accounting".)
+// Filled = original quantity minus remaining (confirmed OK by maintainers;
+// the API does not send a separate filled field).
 function filledQuantity(order: OrderDto) {
   return order.quantity - order.remaining
 }

@@ -1,0 +1,783 @@
+#!/bin/sh
+# Apply and inspect TradeGrid's versioned SQL migrations.
+#
+# Usage: backend/db/migrate <command> [args]
+#
+#   up                   Apply pending migrations in version order.
+#   status               List applied, pending, and problem migrations. Exits
+#                        non-zero if any migration needs attention.
+#   create-test-db NAME  Create an empty database named NAME (must end in _test).
+#   drop-test-db NAME    Drop the database named NAME (must end in _test).
+#
+# Environment:
+#   TRADEGRID_DB_NAME         Target database for up/status. Defaults to the
+#                             container's POSTGRES_DB (tradegrid).
+#   TRADEGRID_MIGRATIONS_DIR  Directory of migration files. Defaults to
+#                             backend/db/migrations.
+#
+# Database names must be lowercase PostgreSQL identifiers of at most 63 bytes
+# (a-z, 0-9, and _, not starting with a digit).
+#
+# psql runs inside the compose "postgres" service, so no PostgreSQL client is
+# needed on the host. See backend/db/README.md.
+set -eu
+
+# Match names byte by byte whatever the caller's locale.
+LC_ALL=C
+export LC_ALL
+
+ROOT=$(CDPATH= cd -- "$(dirname -- "$0")/../.." && pwd)
+MIGRATIONS_DIR=${TRADEGRID_MIGRATIONS_DIR:-$ROOT/backend/db/migrations}
+DB=${TRADEGRID_DB_NAME:-}
+LOCK="pg_advisory_xact_lock(hashtext('tradegrid.migrate'))"
+WORK=
+PSQL_APP=tradegrid-migrate
+# The migration in flight, for the signal handler. See apply_one.
+A_FILE=
+A_VERSION=
+A_SUM=
+A_STATE=
+A_SESSION=
+A_PENDING=
+count=0
+
+# Character sets for names, spelled out because ranges such as [a-z] depend
+# on the locale in some shells.
+LOWER=abcdefghijklmnopqrstuvwxyz
+DIGITS=0123456789
+HEX=0123456789abcdef
+
+die() {
+	echo "migrate: $*" >&2
+	exit 1
+}
+
+# Names are checked as whole strings with case patterns, never with grep,
+# which matches line by line and would accept "victim;<newline>x_test".
+
+# is_identifier NAME succeeds if NAME is a lowercase PostgreSQL identifier
+# that needs no quoting and that PostgreSQL will not truncate: a letter or
+# underscore, then letters, digits, or underscores, at most 63 bytes.
+is_identifier() {
+	case $1 in
+	'' | *[!${LOWER}${DIGITS}_]* | [!${LOWER}_]*) return 1 ;;
+	esac
+	[ ${#1} -le 63 ]
+}
+
+# is_test_db NAME succeeds if NAME is an identifier that starts with a letter
+# and ends in _test.
+is_test_db() {
+	is_identifier "$1" || return 1
+	case $1 in
+	[$LOWER]*_test) return 0 ;;
+	esac
+	return 1
+}
+
+# is_migration_name NAME succeeds for NNNN_description.sql, where the
+# description is lowercase letters, digits, and underscores.
+is_migration_name() {
+	case $1 in
+	[$DIGITS][$DIGITS][$DIGITS][$DIGITS]_?*.sql) ;;
+	*) return 1 ;;
+	esac
+	imn_desc=${1#?????}
+	imn_desc=${imn_desc%.sql}
+	case $imn_desc in
+	'' | *[!${LOWER}${DIGITS}_]*) return 1 ;;
+	esac
+}
+
+# is_hex VALUE LENGTH succeeds if VALUE is exactly LENGTH lowercase hex digits.
+is_hex() {
+	case $1 in
+	'' | *[!$HEX]*) return 1 ;;
+	esac
+	[ ${#1} -eq "$2" ]
+}
+
+is_number() {
+	case $1 in
+	'' | *[!$DIGITS]*) return 1 ;;
+	esac
+}
+
+# Remove the private snapshot directory on any exit. Command substitution
+# subshells do not inherit this trap, so they cannot remove it early.
+cleanup() {
+	if [ -n "$WORK" ]; then
+		rm -rf "$WORK"
+	fi
+}
+trap cleanup EXIT
+
+# While a migration is in flight, a signal must not just exit: the server may
+# still be running it. on_signal stops it and reports what really happened.
+set_signal_traps() {
+	trap 'on_signal 129' HUP
+	trap 'on_signal 130' INT
+	trap 'on_signal 143' TERM
+}
+set_signal_traps
+
+on_signal() {
+	trap '' HUP INT TERM
+	if [ "$count" -gt 0 ]; then
+		echo "migrate: interrupted after applying $count migration(s)" >&2
+	fi
+	if [ -n "$A_FILE" ]; then
+		# A second signal gives up on finding out.
+		trap 'echo "migrate: interrupted again; the outcome of $A_FILE is unknown. Run backend/db/migrate status." >&2; exit '"$1" HUP INT TERM
+		echo "migrate: interrupted while applying $A_FILE" >&2
+		stop_session
+		resolve_outcome
+	fi
+	exit "$1"
+}
+
+# run_psql DATABASE [psql args...] reads SQL from stdin. An empty DATABASE
+# means the container's POSTGRES_DB. Any SQL error stops psql with a non-zero
+# exit status. The session's application_name is $PSQL_APP.
+run_psql() {
+	target=$1
+	shift
+	docker compose -f "$ROOT/compose.yaml" exec -T -e TG_DB="$target" -e PGAPPNAME="$PSQL_APP" postgres \
+		sh -c 'exec psql -X -q -v ON_ERROR_STOP=1 -U "$POSTGRES_USER" -d "${TG_DB:-$POSTGRES_DB}" "$@"' psql "$@"
+}
+
+# checksum FILE prints the file's SHA-256, or fails if it cannot be read.
+checksum() {
+	if command -v sha256sum >/dev/null 2>&1; then
+		cs_out=$(sha256sum <"$1") || return 1
+	else
+		cs_out=$(shasum -a 256 <"$1") || return 1
+	fi
+	cs_out=${cs_out%% *}
+	is_hex "$cs_out" 64 || return 1
+	printf '%s\n' "$cs_out"
+}
+
+random_hex() {
+	rh=$(od -An -N8 -tx1 /dev/urandom | tr -d ' \n')
+	is_hex "$rh" 16 || return 1
+	printf '%s\n' "$rh"
+}
+
+# check_sql FILE NAME rejects, before any SQL runs, what the runner cannot
+# execute safely: top-level transaction control, psql metacommands (any
+# backslash outside a string or comment), unterminated quotes or comments,
+# and files without statements. It tokenizes like psql: comments, all string
+# forms, quoted identifiers, dollar quotes, and SQL-standard BEGIN ATOMIC
+# bodies are skipped, so function bodies may contain BEGIN, END, COMMIT, or
+# backslashes. The server enforces the same rules again while applying (see
+# apply_one), so a gap here cannot let a migration escape its transaction.
+check_sql() {
+	LC_ALL=C awk -v name="$2" '
+function reset_stmt() {
+	words = 0; paren = 0; bd = 0; content = 0; first = ""
+	split("", ids)
+}
+function flag(msg) {
+	printf "%s:%d: %s\n", name, NR, msg
+	bad = 1
+}
+function is_word_char(ch) { return ch ~ /[A-Za-z0-9_$]/ || ch > "~" }
+function on_word(w,    lw) {
+	content = 1
+	lw = tolower(w)
+	words++
+	if (words <= 4 && (lw == "create" || lw == "function" || lw == "procedure" || lw == "or" || lw == "replace"))
+		ids[words] = substr(lw, 1, 1)
+	if (words == 1) {
+		first = lw
+		if (lw == "begin" || lw == "start" || lw == "commit" || lw == "end" || lw == "rollback" ||
+		    lw == "abort" || lw == "savepoint" || lw == "release")
+			flag("transaction control (" toupper(lw) ") is not allowed; the runner wraps each migration in one transaction")
+	} else if (words == 2 && first == "prepare" && lw == "transaction") {
+		flag("transaction control (PREPARE TRANSACTION) is not allowed; the runner wraps each migration in one transaction")
+	}
+	# Like psql: inside CREATE [OR REPLACE] FUNCTION|PROCEDURE, track
+	# BEGIN ATOMIC ... END so the semicolons in the body do not end it.
+	if (paren == 0 && ids[1] == "c" && (ids[2] == "f" || ids[2] == "p" ||
+	    (ids[2] == "o" && ids[3] == "r" && (ids[4] == "f" || ids[4] == "p")))) {
+		if (lw == "begin") bd++
+		else if (lw == "case") { if (bd >= 1) bd++ }
+		else if (lw == "end") { if (bd > 0) bd-- }
+	}
+}
+BEGIN { q = "\047"; bad = 0; state = ""; nstmt = 0; eqp = 0; reset_stmt() }
+{
+	line = $0; L = length(line); i = 1
+	if (eqp) eqnl = 1
+	while (i <= L) {
+		if (state == "block") {
+			t = substr(line, i, 2)
+			if (t == "/*") { depth++; i += 2 }
+			else if (t == "*/") { depth--; i += 2; if (depth == 0) state = "" }
+			else i++
+			continue
+		}
+		if (state == "sq" || state == "eq") {
+			c = substr(line, i, 1)
+			if (state == "eq" && c == "\\") { i += 2; continue }
+			if (c == q) {
+				if (substr(line, i + 1, 1) == q) i += 2
+				else {
+					# An E string continues in escape mode across
+					# quote, newline, quote.
+					if (state == "eq") { eqp = 1; eqnl = 0 }
+					state = ""; i++
+				}
+			} else i++
+			continue
+		}
+		if (state == "dq") {
+			c = substr(line, i, 1)
+			if (c == "\"") { if (substr(line, i + 1, 1) == "\"") i += 2; else { state = ""; i++ } }
+			else i++
+			continue
+		}
+		if (state == "dollar") {
+			j = index(substr(line, i), dtag)
+			if (j == 0) i = L + 1
+			else { i += j - 1 + length(dtag); state = "" }
+			continue
+		}
+		c = substr(line, i, 1)
+		if (c == " " || c == "\t" || c == "\r" || c == "\f" || c == "\v") { i++; continue }
+		t = substr(line, i, 2)
+		if (t == "--") { i = L + 1; continue }
+		if (eqp) {
+			eqp = 0
+			if (c == q && eqnl) { state = "eq"; i++; continue }
+		}
+		if (t == "/*") { state = "block"; sline = NR; depth = 1; i += 2; continue }
+		if (c == "\\") {
+			flag("backslash outside a string: psql metacommands are not supported in migrations")
+			content = 1; i = L + 1; continue
+		}
+		if (c == q) { state = "sq"; sline = NR; content = 1; i++; continue }
+		if (c == "\"") { state = "dq"; sline = NR; content = 1; i++; continue }
+		if (c == "$") {
+			content = 1
+			k = i + 1
+			if (substr(line, k, 1) ~ /[0-9]/) {
+				while (k <= L && substr(line, k, 1) ~ /[0-9]/) k++
+				i = k; continue
+			}
+			while (k <= L) {
+				c2 = substr(line, k, 1)
+				if (c2 != "$" && is_word_char(c2)) k++
+				else break
+			}
+			if (substr(line, k, 1) == "$") {
+				dtag = substr(line, i, k - i + 1); state = "dollar"; sline = NR; i = k + 1; continue
+			}
+			i++; continue
+		}
+		if (c ~ /[A-Za-z_]/ || c > "~") {
+			k = i
+			while (k <= L && is_word_char(substr(line, k, 1))) k++
+			w = substr(line, i, k - i); lw = tolower(w); nx = substr(line, k, 1)
+			if (nx == q && lw == "e") { state = "eq"; sline = NR; content = 1; i = k + 1; continue }
+			if (nx == q && (lw == "b" || lw == "x" || lw == "n")) { state = "sq"; sline = NR; content = 1; i = k + 1; continue }
+			if (lw == "u" && substr(line, k, 2) == "&" q) { state = "sq"; sline = NR; content = 1; i = k + 2; continue }
+			if (lw == "u" && substr(line, k, 2) == "&\"") { state = "dq"; sline = NR; content = 1; i = k + 2; continue }
+			on_word(w); i = k; continue
+		}
+		if (c ~ /[0-9]/) {
+			k = i
+			while (k <= L && substr(line, k, 1) ~ /[0-9A-Za-z_.]/) k++
+			content = 1; i = k; continue
+		}
+		if (c == "(") paren++
+		else if (c == ")") { if (paren > 0) paren-- }
+		else if (c == ";" && paren == 0 && bd == 0) {
+			if (content) nstmt++
+			reset_stmt(); i++; continue
+		}
+		content = 1; i++
+	}
+}
+END {
+	if (state == "block") { printf "%s:%d: unterminated /* comment\n", name, sline; bad = 1 }
+	else if (state == "sq" || state == "eq") { printf "%s:%d: unterminated quoted string\n", name, sline; bad = 1 }
+	else if (state == "dq") { printf "%s:%d: unterminated quoted identifier\n", name, sline; bad = 1 }
+	else if (state == "dollar") { printf "%s:%d: unterminated dollar-quoted string %s\n", name, sline, dtag; bad = 1 }
+	if (content) nstmt++
+	if (nstmt == 0 && !bad) { printf "%s: contains no SQL statements\n", name; bad = 1 }
+	exit bad
+}' "$1"
+}
+
+# load_files sets FILES to the migration file names in version order. It runs
+# in the current shell, so a bad name or a reused version stops the script.
+load_files() {
+	[ -d "$MIGRATIONS_DIR" ] || die "no migrations directory: $MIGRATIONS_DIR"
+	FILES=
+	for path in "$MIGRATIONS_DIR"/*; do
+		[ -e "$path" ] || continue
+		f=${path##*/}
+		case $f in
+		.gitkeep | README.md) continue ;;
+		esac
+		is_migration_name "$f" ||
+			die "bad migration file name '$f' (want NNNN_lowercase_description.sql)"
+		[ -f "$path" ] || die "$f is not a regular file"
+		FILES="$FILES$f
+"
+	done
+	FILES=$(printf '%s' "$FILES" | LC_ALL=C sort)
+	dup=$(printf '%s\n' "$FILES" | cut -c 1-4 | uniq -d)
+	[ -z "$dup" ] || die "more than one migration uses version $(echo "$dup" | head -n 1)"
+}
+
+# applied prints "version|name|checksum|applied_at" for each recorded
+# migration, or nothing when the tracking table does not exist yet. It fails
+# if the database cannot be read, so an outage never looks like empty history,
+# and if a recorded version or name is malformed, since names are used as
+# file paths.
+applied() {
+	exists=$(echo "SELECT to_regclass('public.schema_migrations') IS NOT NULL;" | run_psql "$DB" -At) ||
+		die "cannot query database ${DB:-default}"
+	case $exists in
+	t) ;;
+	f) return 0 ;;
+	*) die "unexpected answer from database ${DB:-default}: $exists" ;;
+	esac
+	ap_rows=$(echo "SELECT version, name, checksum, to_char(applied_at AT TIME ZONE 'UTC', 'YYYY-MM-DD\"T\"HH24:MI:SS\"Z\"')
+	      FROM public.schema_migrations ORDER BY version;" | run_psql "$DB" -At -F '|') ||
+		die "cannot read public.schema_migrations in ${DB:-default}"
+	while IFS='|' read -r ap_version ap_name _; do
+		[ -n "$ap_version$ap_name" ] || continue
+		case $ap_version in
+		[$DIGITS][$DIGITS][$DIGITS][$DIGITS]) is_migration_name "$ap_name" && continue ;;
+		esac
+		die "public.schema_migrations in ${DB:-default} has a malformed row (version '$ap_version', name '$ap_name')"
+	done <<EOF
+$ap_rows
+EOF
+	[ -z "$ap_rows" ] || printf '%s\n' "$ap_rows"
+}
+
+latest_version() {
+	printf '%s\n' "$1" | cut -d '|' -f 1 | LC_ALL=C sort | tail -n 1
+}
+
+ensure_table() {
+	run_psql "$DB" -o /dev/null <<EOF || die "cannot create public.schema_migrations in ${DB:-default}"
+SELECT to_regclass('public.schema_migrations') IS NOT NULL AS tg_exists \\gset
+\\if :tg_exists
+\\else
+SET client_min_messages = warning;
+BEGIN;
+-- CREATE TABLE IF NOT EXISTS is not safe against a concurrent creator.
+SELECT $LOCK;
+CREATE TABLE IF NOT EXISTS public.schema_migrations (
+	version    text        PRIMARY KEY CHECK (version ~ '^[0-9]{4}\$'),
+	name       text        NOT NULL UNIQUE,
+	checksum   text        NOT NULL,
+	applied_at timestamptz NOT NULL DEFAULT now()
+);
+COMMIT;
+\\endif
+EOF
+}
+
+# verify compares recorded migrations with the files on disk. It fails when a
+# recorded migration's file was changed, removed, or cannot be read, so
+# history cannot drift.
+verify() {
+	v_bad=0
+	while IFS='|' read -r v_version v_name v_sum _; do
+		[ -n "$v_version" ] || continue
+		if [ ! -f "$MIGRATIONS_DIR/$v_name" ]; then
+			echo "migrate: $v_name was applied but its file is missing" >&2
+			v_bad=1
+		elif ! v_file_sum=$(checksum "$MIGRATIONS_DIR/$v_name"); then
+			echo "migrate: cannot read $v_name" >&2
+			v_bad=1
+		elif [ "$v_file_sum" != "$v_sum" ]; then
+			echo "migrate: $v_name was modified after it was applied; add a new migration instead" >&2
+			v_bad=1
+		fi
+	done <<EOF
+$1
+EOF
+	return $v_bad
+}
+
+# verify_complete re-reads history after up and requires every migration file
+# to be recorded under its own name with its current checksum.
+verify_complete() {
+	vc_recorded=$(applied) || exit 1
+	verify "$vc_recorded" || die "schema_migrations does not match the migration files after up"
+	for vc_f in $FILES; do
+		vc_row=$(printf '%s\n' "$vc_recorded" | grep "^${vc_f%%_*}|" || true)
+		[ "$(printf '%s\n' "$vc_row" | cut -d '|' -f 2)" = "$vc_f" ] ||
+			die "$vc_f is not recorded in schema_migrations after up"
+	done
+}
+
+cmd_status() {
+	load_files
+	recorded=$(applied) || exit 1
+	latest=$(latest_version "$recorded")
+	echo "database: ${DB:-default}"
+	bad=0
+	for f in $FILES; do
+		version=${f%%_*}
+		sum=$(checksum "$MIGRATIONS_DIR/$f") || die "cannot read $f"
+		row=$(printf '%s\n' "$recorded" | grep "^$version|" || true)
+		if [ -z "$row" ]; then
+			if [ -n "$latest" ] && [ "$version" -lt "$latest" ]; then
+				echo "BLOCKED   $f  (older than applied version $latest)"
+				bad=1
+			elif ! check_sql "$MIGRATIONS_DIR/$f" "$f" >&2; then
+				echo "INVALID   $f"
+				bad=1
+			else
+				echo "pending   $f"
+			fi
+		elif [ "$(echo "$row" | cut -d '|' -f 2)" != "$f" ]; then
+			echo "CONFLICT  $f  (version $version was applied as $(echo "$row" | cut -d '|' -f 2))"
+			bad=1
+		elif [ "$(echo "$row" | cut -d '|' -f 3)" != "$sum" ]; then
+			echo "MODIFIED  $f"
+			bad=1
+		else
+			echo "applied   $f  $(echo "$row" | cut -d '|' -f 4)"
+		fi
+	done
+	while IFS='|' read -r version name _; do
+		if [ -n "$version" ] && [ ! -f "$MIGRATIONS_DIR/$name" ]; then
+			echo "MISSING   $name"
+			bad=1
+		fi
+	done <<EOF
+$recorded
+EOF
+	return $bad
+}
+
+# prepare FILE copies a pending migration into the private work directory and
+# checks the copy. The copy is what gets checksummed and executed, so a file
+# edited during the run cannot be recorded with another file's checksum.
+prepare() {
+	p_snap="$WORK/$1"
+	cp -- "$MIGRATIONS_DIR/$1" "$p_snap" || die "cannot read $1"
+	if ! LC_ALL=C tr -d '\000' <"$p_snap" | cmp -s - "$p_snap"; then
+		die "$1 contains NUL bytes"
+	fi
+	# For backend/db/test-migrate only: skipping the static check proves
+	# that the server-side guard in apply_one holds on its own.
+	if [ "${TRADEGRID_MIGRATE_SELFTEST_SKIP_CHECK:-}" != 1 ]; then
+		check_sql "$p_snap" "$1" >&2 || die "$1 was rejected before running any SQL"
+	fi
+}
+
+# apply_one FILE applies one prepared migration in one transaction with its
+# schema_migrations row, then confirms the row from a new connection.
+#
+# The migration text is passed to the server as a dollar-quoted literal and
+# run by EXECUTE inside a DO block, so psql never interprets it (no
+# metacommands, no variable interpolation, no client-side error handling),
+# and the server refuses any transaction control in it ("EXECUTE of
+# transaction commands is not implemented"). The tags carry a random nonce
+# that the file is checked not to contain.
+#
+# COMMIT is not part of the script. psql reports "ready" once the migration
+# and its tracking row have succeeded, and only then does the session send
+# COMMIT. If the runner stops first, psql's input ends without COMMIT and the
+# server rolls the transaction back, so a migration cannot be committed after
+# the runner has gone. The nonce marks psql's progress lines.
+apply_one() {
+	a_f=$1
+	a_version=${a_f%%_*}
+	a_snap="$WORK/$a_f"
+	a_sum=$(checksum "$a_snap") || die "cannot checksum $a_f"
+	a_nonce=$(random_hex) || die "cannot generate a random tag"
+	a_run_tag="\$tg_run_$a_nonce\$"
+	a_sql_tag="\$tg_sql_$a_nonce\$"
+	if grep -Fq -e "$a_run_tag" -e "$a_sql_tag" "$a_snap"; then
+		die "$a_f contains the runner's reserved quote tag; rerun up"
+	fi
+	a_script="$WORK/$a_f.psql"
+	{
+		cat <<EOF
+\\set SHOW_CONTEXT never
+SELECT pid AS tg_pid, (extract(epoch FROM backend_start) * 1000000)::bigint AS tg_start
+	FROM pg_stat_activity WHERE pid = pg_backend_pid() \\gset
+\\warn tradegrid-migrate: backend $a_nonce :tg_pid :tg_start
+BEGIN;
+SET LOCAL standard_conforming_strings = on;
+SELECT $LOCK;
+DO \$tg_check\$
+BEGIN
+	IF EXISTS (SELECT 1 FROM public.schema_migrations
+	           WHERE version = '$a_version' AND (name, checksum) IS DISTINCT FROM ('$a_f', '$a_sum')) THEN
+		RAISE EXCEPTION 'version $a_version is already recorded for a different file or checksum';
+	END IF;
+END
+\$tg_check\$;
+SELECT EXISTS (SELECT 1 FROM public.schema_migrations WHERE version = '$a_version') AS tg_done \\gset
+\\if :tg_done
+ROLLBACK;
+\\warn tradegrid-migrate: skipped $a_nonce
+\\else
+DO \$tg_order\$
+BEGIN
+	IF EXISTS (SELECT 1 FROM public.schema_migrations WHERE version > '$a_version') THEN
+		RAISE EXCEPTION '$a_f is older than the latest applied version %; renumber it',
+			(SELECT max(version) FROM public.schema_migrations);
+	END IF;
+END
+\$tg_order\$;
+DO $a_run_tag
+BEGIN
+EOF
+		# The file starts right after the tag so syntax errors report
+		# the file's own line numbers.
+		printf 'EXECUTE %s' "$a_sql_tag"
+		cat -- "$a_snap"
+		cat <<EOF
+
+$a_sql_tag;
+END
+$a_run_tag;
+INSERT INTO public.schema_migrations (version, name, checksum) VALUES ('$a_version', '$a_f', '$a_sum');
+\\warn tradegrid-migrate: ready $a_nonce
+\\endif
+EOF
+	} >"$a_script" || die "cannot write the script for $a_f"
+
+	echo "applying  $a_f"
+	A_STATE="$WORK/$a_nonce"
+	A_VERSION=$a_version
+	A_SUM=$a_sum
+	A_FILE=$a_f
+	# Hold signals until the session's pid is recorded, so the handler can
+	# always stop it.
+	trap 'A_PENDING=129' HUP
+	trap 'A_PENDING=130' INT
+	trap 'A_PENDING=143' TERM
+	session "$a_script" "$a_nonce" &
+	A_SESSION=$!
+	set_signal_traps
+	[ -z "$A_PENDING" ] || on_signal "$A_PENDING"
+	wait "$A_SESSION" || true
+	A_SESSION=
+	if [ -e "$A_STATE.skipped" ]; then
+		echo "skipping  $a_f (applied by a concurrent run)"
+	elif [ ! -e "$A_STATE.commit" ]; then
+		A_FILE=
+		die "$a_f failed before COMMIT was sent, so it was not applied and nothing was recorded"
+	elif [ ! -e "$A_STATE.applied" ]; then
+		echo "migrate: psql ended without confirming that $a_f was committed" >&2
+		resolve_outcome
+		exit 1
+	fi
+	a_row=$(echo "SELECT name || '|' || checksum FROM public.schema_migrations WHERE version = '$a_version';" |
+		run_psql "$DB" -At) || die "cannot confirm $a_f in schema_migrations"
+	[ "$a_row" = "$a_f|$a_sum" ] ||
+		die "$a_f is not recorded in schema_migrations with checksum $a_sum (found '$a_row')"
+	if [ -e "$A_STATE.applied" ]; then
+		count=$((count + 1))
+	fi
+	A_FILE=
+}
+
+# session SCRIPT NONCE runs in the background for apply_one. It feeds SCRIPT
+# to psql through a FIFO, relays psql's messages, and leaves $A_STATE.* files
+# for the runner: .backend (the server pid and its start time, which
+# together identify the session), .commit (written just before COMMIT is
+# sent), .applied (psql confirmed the commit), and .skipped. The
+# runner may kill it at any time; it has no traps, so it dies at once. SIGINT
+# does not reach it: the shell ignores SIGINT in background jobs.
+session() {
+	s_in="$A_STATE.in"
+	s_out="$A_STATE.out"
+	mkfifo "$s_in" "$s_out" || exit 1
+	PSQL_APP="tradegrid-migrate-$2"
+	run_psql "$DB" -o /dev/null <"$s_in" >"$s_out" 2>&1 &
+	echo "$!" >"$A_STATE.client"
+	exec 3>"$s_in" 4<"$s_out"
+	# psql stops reading after an error; its output says why.
+	cat -- "$1" >&3 2>/dev/null || true
+	while IFS= read -r s_line <&4 || [ -n "$s_line" ]; do
+		case $s_line in
+		"tradegrid-migrate: backend $2 "*)
+			printf '%s\n' "${s_line#"tradegrid-migrate: backend $2 "}" >"$A_STATE.backend"
+			;;
+		"tradegrid-migrate: ready $2")
+			# $$ is the runner. If it was killed outright, it cannot
+			# report the outcome, so do not commit.
+			kill -0 "$$" 2>/dev/null || break
+			: >"$A_STATE.commit"
+			(
+				trap '' PIPE
+				printf 'COMMIT;\n\\warn tradegrid-migrate: applied %s\n' "$2"
+			) >&3 2>/dev/null || true
+			exec 3>&-
+			;;
+		"tradegrid-migrate: skipped $2")
+			: >"$A_STATE.skipped"
+			exec 3>&-
+			;;
+		"tradegrid-migrate: applied $2")
+			: >"$A_STATE.applied"
+			;;
+		'') ;;
+		*) printf '%s\n' "$s_line" >&2 ;;
+		esac
+		s_line=
+	done
+	exec 3>&- 4<&-
+	wait "$(cat "$A_STATE.client")" || true
+}
+
+# stop_session stops the background session, so it can no longer send
+# COMMIT, and the docker client it started, so psql's input ends.
+stop_session() {
+	if [ -n "$A_SESSION" ]; then
+		ss_client=$(cat "$A_STATE.client" 2>/dev/null) || ss_client=
+		if is_number "$ss_client"; then
+			kill "$ss_client" 2>/dev/null || true
+		fi
+		kill "$A_SESSION" 2>/dev/null || true
+		wait "$A_SESSION" 2>/dev/null || true
+		A_SESSION=
+	fi
+}
+
+# resolve_outcome reports what happened to the migration in flight, checked
+# over a new connection. It first terminates the migration's server session,
+# found by its pid and start time (so a reused pid cannot match) or by its
+# application_name, and requires it to be gone:
+# then the transaction has committed or rolled back for good, and the
+# schema_migrations row, written in the same transaction, says which. The
+# migration is only reported as not applied when both are verified;
+# otherwise the outcome is reported as unknown.
+resolve_outcome() {
+	ro_hint="Run ${DB:+TRADEGRID_DB_NAME=$DB }backend/db/migrate status to check."
+	ro_backend=$(cat "$A_STATE.backend" 2>/dev/null) || ro_backend=
+	ro_pid=${ro_backend%% *}
+	ro_start=${ro_backend#* }
+	if ! is_number "$ro_pid" || ! is_number "$ro_start"; then
+		ro_pid=0
+		ro_start=0
+	fi
+	ro_match="((pid = $ro_pid AND (extract(epoch FROM backend_start) * 1000000)::bigint = $ro_start)
+	          OR application_name = 'tradegrid-migrate-${A_STATE##*/}') AND pid <> pg_backend_pid()"
+	ro_sql="SET client_min_messages = error;
+SELECT pg_terminate_backend(pid, 5000) FROM pg_stat_activity WHERE $ro_match;
+SELECT 'remaining=' || count(*) FROM pg_stat_activity WHERE $ro_match;
+SELECT 'row=' || coalesce((SELECT name || '|' || checksum FROM public.schema_migrations WHERE version = '$A_VERSION'), '');"
+	ro_out=$(printf '%s\n' "$ro_sql" | run_psql "$DB" -At 2>/dev/null) || ro_out=
+	ro_remaining=
+	ro_row=
+	ro_checked=
+	while IFS= read -r ro_line; do
+		case $ro_line in
+		remaining=*) ro_remaining=${ro_line#remaining=} ;;
+		row=*)
+			ro_row=${ro_line#row=}
+			ro_checked=1
+			;;
+		esac
+	done <<EOF
+$ro_out
+EOF
+	if [ -z "$ro_checked" ] || [ -z "$ro_remaining" ]; then
+		echo "migrate: could not reach the database; the outcome of $A_FILE is unknown. $ro_hint" >&2
+	elif [ "$ro_remaining" != 0 ]; then
+		echo "migrate: the server session running $A_FILE did not stop; the outcome is unknown. $ro_hint" >&2
+	elif [ "$ro_row" = "$A_FILE|$A_SUM" ]; then
+		echo "migrate: $A_FILE was committed and is recorded as applied." >&2
+	elif [ -n "$ro_row" ]; then
+		echo "migrate: version $A_VERSION is recorded as '$ro_row', not $A_FILE; the outcome is unknown. $ro_hint" >&2
+	elif [ ! -e "$A_STATE.commit" ]; then
+		echo "migrate: $A_FILE was not applied: COMMIT was never sent, its server session has ended, and schema_migrations has no row for it." >&2
+	elif [ "$ro_pid" != 0 ]; then
+		echo "migrate: $A_FILE was not applied: its server session ended without committing, and schema_migrations has no row for it." >&2
+	else
+		echo "migrate: the server session running $A_FILE could not be identified; the outcome is unknown. $ro_hint" >&2
+	fi
+}
+
+cmd_up() {
+	load_files
+	WORK=$(mktemp -d "${TMPDIR:-/tmp}/tradegrid-migrate.XXXXXX") || die "cannot create a temporary directory"
+	recorded=$(applied) || exit 1
+	verify "$recorded" || die "refusing to apply migrations until history matches the files"
+	latest=$(latest_version "$recorded")
+
+	# Check every pending file before any SQL runs, so one bad file stops
+	# the whole run instead of leaving earlier migrations half-applied.
+	PENDING=
+	for f in $FILES; do
+		version=${f%%_*}
+		if printf '%s\n' "$recorded" | grep -q "^$version|"; then
+			continue
+		fi
+		if [ -n "$latest" ] && [ "$version" -lt "$latest" ]; then
+			die "$f is older than the latest applied version $latest; renumber it after $latest"
+		fi
+		prepare "$f"
+		PENDING="$PENDING $f"
+	done
+
+	ensure_table
+	# The checks above used a snapshot of history. apply_one repeats them
+	# under the advisory lock, so a concurrent run cannot slip an older or
+	# conflicting version past them.
+	count=0
+	for f in $PENDING; do
+		apply_one "$f"
+	done
+	verify_complete
+	echo "ran $count pending migration(s) on ${DB:-default}"
+}
+
+# test_db_name NAME refuses, before any SQL runs, anything but a single test
+# database name. The name also reaches SQL only as a psql variable quoted as
+# an identifier (:"tg_db"), never spliced into the SQL text.
+test_db_name() {
+	[ $# -eq 1 ] || die "usage: migrate $CMD NAME"
+	is_test_db "$1" ||
+		die "refusing '$1': test database names must start with a letter, use only a-z, 0-9, and _, end in _test, and be at most 63 bytes"
+}
+
+check_db_name() {
+	[ -z "$DB" ] || is_identifier "$DB" ||
+		die "refusing TRADEGRID_DB_NAME '$DB': database names must use only a-z, 0-9, and _, not start with a digit, and be at most 63 bytes"
+}
+
+CMD=${1:-}
+[ $# -gt 0 ] && shift
+case $CMD in
+up)
+	check_db_name
+	cmd_up
+	;;
+status)
+	check_db_name
+	cmd_status
+	;;
+create-test-db)
+	test_db_name "$@"
+	echo 'CREATE DATABASE :"tg_db";' | run_psql postgres -v "tg_db=$1" || die "cannot create $1"
+	echo "created $1"
+	;;
+drop-test-db)
+	test_db_name "$@"
+	printf 'SET client_min_messages = warning;\nDROP DATABASE IF EXISTS :"tg_db" WITH (FORCE);\n' |
+		run_psql postgres -v "tg_db=$1" || die "cannot drop $1"
+	echo "dropped $1"
+	;;
+*)
+	awk 'NR > 1 && /^#/ { sub(/^# ?/, ""); print; next } NR > 1 { exit }' "$0"
+	[ -z "$CMD" ] || [ "$CMD" = help ] || exit 2
+	;;
+esac

@@ -93,7 +93,6 @@ export default function OrderList({
                 <td className={order.side === 'BUY' ? 'side-buy' : 'side-sell'}>
                   {order.side === 'BUY' ? 'Buy' : 'Sell'}
                 </td>
-                {/* TODO: use the shared formatters from #40 for price and time */}
                 <td>{safeFormat(formatUsdCents, order.price)}</td>
                 <td>{safeFormat(formatWholeShares, order.quantity)}</td>
                 <td>{safeFormat(formatWholeShares, order.remaining)}</td>

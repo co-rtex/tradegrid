@@ -1,9 +1,17 @@
-import "./App.css";
-
-import OrderEntryForm from "./components/OrderEntryForm";
-
+import './App.css'
+import OrderEntryForm from './components/OrderEntryForm'
 function App() {
-  return <OrderEntryForm />;
+  return (
+    <main className="app-shell">
+      <p className="app-community">UW–Madison FinTech Club</p>
+      <h1>TradeGrid</h1>
+      <p className="app-description">
+        A student-built simulated trading platform.
+      </p>
+      <p className="app-status">Built together. One contribution at a time.</p>
+      <OrderEntryForm />
+    </main>
+  )
 }
 
-export default App;
+export default App

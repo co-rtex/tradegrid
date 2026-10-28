@@ -1,0 +1,98 @@
+/* Red and green are reserved for financial meaning, so state is carried by
+   text and indicator shape, with cyan and neutrals from docs/visual-system.md. */
+.connection-status {
+  display: inline-grid;
+  gap: 4px;
+  padding: 8px 12px;
+  border: 1px solid #334155;
+  border-radius: 8px;
+  background: #111827;
+  color: #cbd5e1;
+  font-size: 14px;
+}
+
+.connection-status-message {
+  display: grid;
+  grid-template-columns: auto 1fr;
+  column-gap: 8px;
+  align-items: center;
+}
+
+.connection-status-label,
+.connection-status-detail,
+.connection-status-updated {
+  margin: 0;
+}
+
+.connection-status-label strong {
+  color: #f8fafc;
+  font-weight: 600;
+}
+
+.connection-status-detail {
+  grid-column: 2;
+  font-size: 12px;
+}
+
+.connection-status-updated {
+  padding-left: 20px;
+  color: #94a3b8;
+  font-size: 12px;
+  font-variant-numeric: tabular-nums;
+}
+
+.connection-status-indicator {
+  box-sizing: border-box;
+  width: 12px;
+  height: 12px;
+  border: 2px solid #94a3b8;
+  border-radius: 50%;
+}
+
+/* Solid dot: receiving updates. */
+.connection-status[data-status='connected'] .connection-status-indicator {
+  border-color: #22d3ee;
+  background: #22d3ee;
+}
+
+/* Dashed spinning ring: trying to connect. */
+.connection-status[data-status='connecting'] .connection-status-indicator,
+.connection-status[data-status='reconnecting'] .connection-status-indicator {
+  border-style: dashed;
+  border-color: #22d3ee;
+  animation: connection-status-spin 2s linear infinite;
+}
+
+/* Hollow ring: not connected. */
+.connection-status[data-status='disconnected'] .connection-status-indicator {
+  border-color: #64748b;
+}
+
+/* Square with a slash: failed. */
+.connection-status[data-status='error'] .connection-status-indicator {
+  border-color: #cbd5e1;
+  border-radius: 2px;
+  background: linear-gradient(
+    to top right,
+    transparent calc(50% - 1px),
+    #cbd5e1 calc(50% - 1px),
+    #cbd5e1 calc(50% + 1px),
+    transparent calc(50% + 1px)
+  );
+}
+
+.connection-status[data-status='error'] {
+  border-color: #cbd5e1;
+}
+
+@keyframes connection-status-spin {
+  to {
+    transform: rotate(360deg);
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .connection-status-indicator {
+    animation: none !important;
+  }
+}

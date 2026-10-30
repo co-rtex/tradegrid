@@ -51,6 +51,8 @@ See [Portfolio Accounting Contract](portfolio.md) for average-cost basis, realiz
 ### Market Data
 Publishes order-book and execution updates to clients.
 
+See [Real-time Stream Contract](realtime.md) for the WebSocket notifications that tell clients when to re-fetch REST snapshots.
+
 ### Storage
 Persists accounts, orders, executions, positions, and related state.
 

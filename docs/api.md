@@ -8,6 +8,7 @@ Related documents:
 
 - [Order Domain Model](order-model.md) defines `orders.Order`, its enumerations, and lifecycle.
 - [Matching Engine Behavior](matching-engine.md) defines price-time priority.
+- [Real-time Stream Contract](realtime.md) (Sprint 3, [#71](https://github.com/co-rtex/tradegrid/issues/71)) adds `GET /api/v1/stream`, which notifies clients to re-fetch the endpoints below. It changes none of them.
 - Order input validation ([issue #3](https://github.com/co-rtex/tradegrid/issues/3), PR #29) defines the logical input rules. That draft says the backend has no serialized order model; `orders.Order` now has JSON field names (from #6), and this document fixes the wire format, symbol list, case rule, numeric bounds, and short-selling policy that #29 lists as future decisions.
 
 ## Conventions
@@ -200,6 +201,10 @@ Returns both demo accounts, sorted by `userId`.
 { "accounts": [ { "userId": "alice", "...": "full Account" }, { "userId": "bob", "...": "full Account" } ] }
 ```
 
+### `GET /api/v1/stream`
+
+WebSocket notifications that tell clients when to re-fetch the snapshots above. See the [Real-time Stream Contract](realtime.md) for messages, ordering, and reconnect rules. The REST endpoints stay authoritative.
+
 ### `GET /api/v1/symbols`
 
 Returns the tradable symbols, sorted by symbol.
@@ -223,6 +228,7 @@ Every error response has this body. `field` names the offending request field or
 | 400 | `MALFORMED_JSON` | Body is not one JSON object, has trailing data, or a value has the wrong JSON type (for example a string, fraction, or exponent where an integer is required, or an integer outside `int64`). |
 | 400 | `UNKNOWN_FIELD` | Body contains a field not listed for the request, including server-owned fields. |
 | 400 | `INVALID_QUERY` | A required query parameter is missing, or `limit`/`depth` is not an integer in its allowed range. |
+| 403 | `FORBIDDEN_ORIGIN` | `GET /api/v1/stream` from a browser origin that is not allowed ([realtime.md](realtime.md#endpoint)). |
 | 404 | `UNKNOWN_USER` | `userId` is not a demo account (body or query). |
 | 404 | `NOT_FOUND` | No such route. |
 | 405 | `METHOD_NOT_ALLOWED` | Route exists but not for this method. The response includes an `Allow` header. |
@@ -237,6 +243,7 @@ Every error response has this body. `field` names the offending request field or
 | 422 | `INSUFFICIENT_CASH` | A BUY needs more available cash than the account has. |
 | 422 | `INSUFFICIENT_SHARES` | A SELL needs more available shares than the account has. |
 | 422 | `LIMIT_EXCEEDED` | The submission would push an aggregate past its bound. |
+| 426 | `UPGRADE_REQUIRED` | `GET /api/v1/stream` without a WebSocket upgrade. |
 | 500 | `INTERNAL` | Unexpected failure. Nothing was published. |
 
 When several rules fail, the first in this order wins: decoding (400), then `userId` (404), then field validation in table order, then risk.

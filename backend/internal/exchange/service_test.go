@@ -10,9 +10,11 @@ import (
 	"reflect"
 	"slices"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
+	"github.com/co-rtex/tradegrid/backend/internal/accounts"
 	"github.com/co-rtex/tradegrid/backend/internal/executions"
 	"github.com/co-rtex/tradegrid/backend/internal/orders"
 )
@@ -48,6 +50,7 @@ type state struct {
 	Book       BookSnapshot
 	Alice, Bob []Order
 	History    []executions.Record
+	Accounts   []accounts.Snapshot
 }
 
 func snapshot(t *testing.T, s *Service) state {
@@ -59,7 +62,7 @@ func snapshot(t *testing.T, s *Service) state {
 	if err := errors.Join(err1, err2, err3, err4); err != nil {
 		t.Fatalf("snapshot: %v", err)
 	}
-	return state{book, alice, bob, hist}
+	return state{book, alice, bob, hist, s.Accounts()}
 }
 
 // asJSON round-trips v through JSON so it compares equal to decoded fixtures.
@@ -76,21 +79,26 @@ func asJSON(t *testing.T, v any) any {
 	return out
 }
 
-// TestFixtures replays the contract fixtures that do not need accounts (#35)
-// and compares responses and reads with the documented JSON.
+// TestFixtures replays every contract fixture and compares the submit
+// response (or rejection code) and the reads with the documented JSON. The
+// symbols read is the instruments catalog, which the service does not serve.
 func TestFixtures(t *testing.T) {
-	for _, name := range []string{"01-no-fill.json", "02-full-fill.json", "03-partial-fill.json"} {
-		t.Run(name, func(t *testing.T) {
-			raw, err := os.ReadFile(filepath.Join("..", "..", "..", "docs", "fixtures", name))
+	names, err := filepath.Glob(filepath.Join("..", "..", "..", "docs", "fixtures", "*.json"))
+	if err != nil || len(names) != 5 {
+		t.Fatalf("fixtures = %v, %v; want 5 files", names, err)
+	}
+	for _, path := range names {
+		t.Run(filepath.Base(path), func(t *testing.T) {
+			raw, err := os.ReadFile(path)
 			if err != nil {
 				t.Fatal(err)
 			}
 			var fx struct {
 				Setup    []struct{ Body SubmitRequest }
-				Request  struct{ Body SubmitRequest }
+				Request  *struct{ Body SubmitRequest }
 				Response struct {
 					Status int
-					Body   any
+					Body   json.RawMessage
 				}
 				After map[string]any
 			}
@@ -102,23 +110,48 @@ func TestFixtures(t *testing.T) {
 			for _, r := range fx.Setup {
 				mustSubmit(t, s, r.Body)
 			}
-			res := mustSubmit(t, s, fx.Request.Body)
-			if got := asJSON(t, res); !reflect.DeepEqual(got, fx.Response.Body) {
-				t.Errorf("response:\n got  %v\n want %v", got, fx.Response.Body)
+			if fx.Request != nil {
+				res, err := s.Submit(fx.Request.Body)
+				if fx.Response.Status == 201 {
+					var want any
+					json.Unmarshal(fx.Response.Body, &want)
+					if err != nil {
+						t.Fatalf("Submit: %v", err)
+					}
+					if got := asJSON(t, res); !reflect.DeepEqual(got, want) {
+						t.Errorf("response:\n got  %v\n want %v", got, want)
+					}
+				} else {
+					var want struct{ Error struct{ Code Code } }
+					json.Unmarshal(fx.Response.Body, &want)
+					var e *Error
+					if !errors.As(err, &e) || e.Code != want.Error.Code {
+						t.Errorf("err = %v, want code %s", err, want.Error.Code)
+					}
+				}
 			}
 
 			book, _ := s.OrderBook("AAPL", 0)
 			alice, _ := s.Orders("alice", 0)
 			bob, _ := s.Orders("bob", 0)
 			execs, _ := s.Executions("AAPL", "", 0)
-			for path, got := range map[string]any{
+			reads := map[string]any{
+				"GET /api/v1/accounts":               map[string]any{"accounts": s.Accounts()},
 				"GET /api/v1/orderbook?symbol=AAPL":  book,
 				"GET /api/v1/orders?userId=alice":    map[string]any{"orders": alice},
 				"GET /api/v1/orders?userId=bob":      map[string]any{"orders": bob},
 				"GET /api/v1/executions?symbol=AAPL": map[string]any{"executions": execs},
-			} {
-				if g := asJSON(t, got); !reflect.DeepEqual(g, fx.After[path]) {
-					t.Errorf("%s:\n got  %v\n want %v", path, g, fx.After[path])
+			}
+			for path, want := range fx.After {
+				got, ok := reads[path]
+				if !ok {
+					if path != "GET /api/v1/symbols" {
+						t.Errorf("fixture read %q is not checked", path)
+					}
+					continue
+				}
+				if g := asJSON(t, got); !reflect.DeepEqual(g, want) {
+					t.Errorf("%s:\n got  %v\n want %v", path, g, want)
 				}
 			}
 		})
@@ -185,6 +218,11 @@ func TestRejectionsPublishNothing(t *testing.T) {
 		code  Code
 		field string
 	}{
+		{"unknown user", limit("carol", "BUY", 1, 19000), CodeUnknownUser, "userId"},
+		{"unknown user before field errors", SubmitRequest{UserID: "carol", Symbol: "aapl", Side: "BUY", Type: "LIMIT"}, CodeUnknownUser, "userId"},
+		{"insufficient cash", limit("bob", "BUY", 600, 20000), CodeInsufficientCash, ""},
+		{"insufficient shares", limit("bob", "SELL", 101, 19000), CodeInsufficientShares, ""},
+		{"shares reserved by a resting order", limit("alice", "SELL", 96, 19500), CodeInsufficientShares, ""},
 		{"missing user", SubmitRequest{Symbol: "AAPL", Side: "BUY", Type: "LIMIT", Price: 1, Quantity: 1}, CodeMissingField, "userId"},
 		{"missing symbol", SubmitRequest{UserID: "bob", Side: "BUY", Type: "LIMIT", Price: 1, Quantity: 1}, CodeMissingField, "symbol"},
 		{"missing side", SubmitRequest{UserID: "bob", Symbol: "AAPL", Type: "LIMIT", Price: 1, Quantity: 1}, CodeMissingField, "side"},
@@ -339,6 +377,15 @@ func TestReads(t *testing.T) {
 			t.Errorf("%s: err = %v, want INVALID_QUERY", name, err)
 		}
 	}
+	for name, call := range map[string]func() error{
+		"orders for unknown user":     func() error { _, err := s.Orders("carol", 0); return err },
+		"executions for unknown user": func() error { _, err := s.Executions("AAPL", "carol", 0); return err },
+	} {
+		var e *Error
+		if err := call(); !errors.As(err, &e) || e.Code != CodeUnknownUser || e.Field != "userId" {
+			t.Errorf("%s: err = %v, want UNKNOWN_USER", name, err)
+		}
+	}
 }
 
 // Concurrent submissions and reads are race-clean (run with -race), and the
@@ -348,6 +395,7 @@ func TestConcurrentSubmitsAndReads(t *testing.T) {
 	s := New(Config{})
 	const workers, perWorker = 8, 60
 	var wg sync.WaitGroup
+	var accepted atomic.Int64
 	for w := range workers {
 		wg.Add(2)
 		go func() {
@@ -356,7 +404,14 @@ func TestConcurrentSubmitsAndReads(t *testing.T) {
 			for range perWorker {
 				side := []string{"BUY", "SELL"}[r.IntN(2)]
 				user := []string{"alice", "bob"}[r.IntN(2)]
-				if _, err := s.Submit(limit(user, side, int64(1+r.IntN(5)), int64(18990+r.IntN(21)))); err != nil {
+				_, err := s.Submit(limit(user, side, int64(1+r.IntN(5)), int64(18990+r.IntN(21))))
+				var e *Error
+				switch {
+				case err == nil:
+					accepted.Add(1)
+				case errors.As(err, &e) && (e.Code == CodeInsufficientCash || e.Code == CodeInsufficientShares):
+					// Expected: an account ran out of available cash or shares.
+				default:
 					t.Error(err)
 					return
 				}
@@ -368,6 +423,7 @@ func TestConcurrentSubmitsAndReads(t *testing.T) {
 				s.OrderBook("AAPL", 0)
 				s.Orders("alice", 0)
 				s.Executions("AAPL", "", 0)
+				s.Accounts()
 			}
 		}()
 	}
@@ -380,10 +436,19 @@ func TestConcurrentSubmitsAndReads(t *testing.T) {
 		all = append(all, o)
 	}
 	history := slices.Clone(s.history)
+	ledger := s.ledger
 	s.mu.Unlock()
-	if len(all) != workers*perWorker {
-		t.Fatalf("%d orders, want %d", len(all), workers*perWorker)
+	if int64(len(all)) != accepted.Load() {
+		t.Fatalf("%d orders stored, %d accepted", len(all), accepted.Load())
 	}
+	canonical := make([]orders.Order, len(all))
+	for i, o := range all {
+		canonical[i] = o.Order
+	}
+	if err := ledger.Reconcile(canonical); err != nil {
+		t.Errorf("reservations disagree with open orders: %v", err)
+	}
+	checkConserved(t, s.Accounts())
 	seqs := map[int64]bool{}
 	filled := map[string]int64{}
 	var restingBids, restingAsks int64
@@ -435,4 +500,133 @@ func must[T any](v T, err error) T {
 		panic(err)
 	}
 	return v
+}
+
+// checkConserved verifies that trading only moves cash and shares between
+// accounts: totals equal the seeded totals, and no balance is negative.
+func checkConserved(t *testing.T, snaps []accounts.Snapshot) {
+	t.Helper()
+	var cash int64
+	shares := map[string]int64{}
+	for _, a := range snaps {
+		cash += a.Cash.Total
+		if a.Cash.Available < 0 || a.Cash.Reserved < 0 {
+			t.Errorf("%s cash %+v", a.UserID, a.Cash)
+		}
+		for _, p := range a.Positions {
+			shares[p.Symbol] += p.Total
+			if p.Available < 0 || p.Reserved < 0 {
+				t.Errorf("%s %s %+v", a.UserID, p.Symbol, p.Balance)
+			}
+		}
+	}
+	n := int64(len(snaps))
+	if cash != n*accounts.DemoCash {
+		t.Errorf("total cash %d, want %d", cash, n*accounts.DemoCash)
+	}
+	for sym, total := range shares {
+		if total != n*accounts.DemoShares {
+			t.Errorf("total %s shares %d, want %d", sym, total, n*accounts.DemoShares)
+		}
+	}
+}
+
+func accountOf(t *testing.T, s *Service, userID string) accounts.Snapshot {
+	t.Helper()
+	for _, a := range s.Accounts() {
+		if a.UserID == userID {
+			return a
+		}
+	}
+	t.Fatalf("no account %q", userID)
+	return accounts.Snapshot{}
+}
+
+func position(a accounts.Snapshot, symbol string) accounts.Balance {
+	for _, p := range a.Positions {
+		if p.Symbol == symbol {
+			return p.Balance
+		}
+	}
+	return accounts.Balance{}
+}
+
+// A user's orders may trade with each other: the execution is recorded,
+// totals do not change, and both reservations are released.
+func TestSameAccountTradeNets(t *testing.T) {
+	s := newTestService()
+	mustSubmit(t, s, limit("alice", "SELL", 5, 19000))
+	res := mustSubmit(t, s, limit("alice", "BUY", 5, 19100))
+
+	if len(res.Executions) != 1 || res.Executions[0].BuyerUserID != "alice" || res.Executions[0].SellerUserID != "alice" {
+		t.Fatalf("executions = %+v", res.Executions)
+	}
+	a := accountOf(t, s, "alice")
+	if want := (accounts.Balance{Total: accounts.DemoCash, Available: accounts.DemoCash}); a.Cash != want {
+		t.Errorf("cash = %+v, want %+v", a.Cash, want)
+	}
+	if got, want := position(a, "AAPL"), (accounts.Balance{Total: 100, Available: 100}); got != want {
+		t.Errorf("AAPL = %+v, want %+v", got, want)
+	}
+}
+
+// Resting orders keep their reservations, so later orders cannot spend the
+// same cash or sell the same shares.
+func TestReservationsBlockDoubleSpending(t *testing.T) {
+	s := newTestService()
+	// $2,000.00 × 50 reserves all of bob's $100,000.00.
+	mustSubmit(t, s, limit("bob", "BUY", 50, 200000))
+	if c := accountOf(t, s, "bob").Cash; c.Reserved != accounts.DemoCash || c.Available != 0 {
+		t.Fatalf("bob cash = %+v", c)
+	}
+	var e *Error
+	if _, err := s.Submit(limit("bob", "BUY", 1, 1)); !errors.As(err, &e) || e.Code != CodeInsufficientCash {
+		t.Fatalf("second buy: err = %v, want INSUFFICIENT_CASH", err)
+	}
+
+	mustSubmit(t, s, limit("alice", "SELL", 60, 300000))
+	mustSubmit(t, s, limit("alice", "SELL", 40, 300000))
+	if _, err := s.Submit(limit("alice", "SELL", 1, 300000)); !errors.As(err, &e) || e.Code != CodeInsufficientShares {
+		t.Fatalf("third sell: err = %v, want INSUFFICIENT_SHARES", err)
+	}
+	if p := position(accountOf(t, s, "alice"), "AAPL"); p.Reserved != 100 || p.Available != 0 {
+		t.Fatalf("alice AAPL = %+v", p)
+	}
+}
+
+// Concurrent orders that together need more than an account has: exactly
+// the affordable number are accepted.
+func TestConcurrentOverspendAndOversell(t *testing.T) {
+	s := New(Config{})
+	const tries = 20
+	var wg sync.WaitGroup
+	var buys, sells atomic.Int64
+	for range tries {
+		wg.Add(2)
+		go func() {
+			defer wg.Done()
+			// $10,000.00 each: bob can afford 10.
+			if _, err := s.Submit(limit("bob", "BUY", 1, 1000000)); err == nil {
+				buys.Add(1)
+			}
+		}()
+		go func() {
+			defer wg.Done()
+			// 10 shares each, priced above every bid: alice can sell 10 times.
+			if _, err := s.Submit(limit("alice", "SELL", 10, 2000000)); err == nil {
+				sells.Add(1)
+			}
+		}()
+	}
+	wg.Wait()
+	if buys.Load() != 10 || sells.Load() != 10 {
+		t.Fatalf("accepted %d buys and %d sells, want 10 and 10", buys.Load(), sells.Load())
+	}
+	if c := accountOf(t, s, "bob").Cash; c.Available != 0 || c.Reserved != accounts.DemoCash {
+		t.Errorf("bob cash = %+v", c)
+	}
+	if p := position(accountOf(t, s, "alice"), "AAPL"); p.Available != 0 || p.Reserved != 100 {
+		t.Errorf("alice AAPL = %+v", p)
+	}
+	checkConserved(t, s.Accounts())
 }

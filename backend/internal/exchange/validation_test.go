@@ -68,20 +68,26 @@ func TestSymbolQueryValidation(t *testing.T) {
 }
 
 func TestAcceptedBoundaryOrders(t *testing.T) {
-	for _, tc := range []struct {
-		symbol          string
-		price, quantity int64
-	}{{"AAPL", 1, 1}, {"MSFT", MaxPrice, MaxQuantity}} {
-		s := newTestService()
-		req := limit("bob", "BUY", tc.quantity, tc.price)
-		req.Symbol = tc.symbol
-		result, err := s.Submit(req)
-		if err != nil {
-			t.Fatalf("Submit(%+v): %v", req, err)
-		}
-		book, err := s.OrderBook(tc.symbol, 0)
-		if err != nil || len(book.Bids) != 1 || book.Bids[0].Price != tc.price || book.Bids[0].Quantity != tc.quantity || result.Order.Remaining != tc.quantity {
-			t.Fatalf("Submit(%+v) result = %+v, book = %+v, err = %v", req, result, book, err)
-		}
+	s := newTestService()
+	req := limit("bob", "BUY", 1, 1)
+	result, err := s.Submit(req)
+	if err != nil {
+		t.Fatalf("Submit(%+v): %v", req, err)
+	}
+	book, err := s.OrderBook("AAPL", 0)
+	if err != nil || len(book.Bids) != 1 || book.Bids[0].Price != 1 || book.Bids[0].Quantity != 1 || result.Order.Remaining != 1 {
+		t.Fatalf("Submit(%+v) result = %+v, book = %+v, err = %v", req, result, book, err)
+	}
+
+	// The largest valid request passes validation; a demo account cannot
+	// afford it, so risk rejects it rather than a field rule.
+	req = limit("bob", "BUY", MaxQuantity, MaxPrice)
+	req.Symbol = "MSFT"
+	if _, err := checkRequest(req); err != nil {
+		t.Fatalf("checkRequest(%+v): %v", req, err)
+	}
+	var e *Error
+	if _, err := s.Submit(req); !errors.As(err, &e) || e.Code != CodeInsufficientCash {
+		t.Fatalf("Submit(%+v): err = %v, want INSUFFICIENT_CASH", req, err)
 	}
 }

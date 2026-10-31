@@ -90,7 +90,7 @@ Example: 3 shares with basis `1000`. Selling 1 allocates `floor(1000 × 1 / 3) =
 
 **Same-account executions** (`buyerUserId == sellerUserId`) leave `costBasis` and `realizedPnl` unchanged, just as cash and share totals net to zero. Trading with yourself cannot create realized P&L or change average cost.
 
-**Errors.** A SELL fill for more than `total` shares, a quantity or price outside the Sprint 2 bounds, or a result above `9007199254740991` is an error. During settlement it is a bug (reservations make it impossible) and rolls the submission back with `INTERNAL`. The calculator returns new values and never changes its inputs on error.
+**Errors.** A SELL fill for more than `total` shares, a quantity or price that is not positive, an input that breaks the invariants below, or a result outside `±9007199254740991` is an error. During settlement it is a bug (reservations make it impossible) and rolls the submission back with `INTERNAL`. The calculator returns new values and never changes its inputs on error.
 
 ## Worked Examples
 

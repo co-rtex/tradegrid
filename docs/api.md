@@ -8,6 +8,7 @@ Related documents:
 
 - [Order Domain Model](order-model.md) defines `orders.Order`, its enumerations, and lifecycle.
 - [Matching Engine Behavior](matching-engine.md) defines price-time priority.
+- [Portfolio Accounting Contract](portfolio.md) (Sprint 3) defines cost basis, P&L, reference prices, and `GET /api/v1/portfolio`. It adds to this contract and changes nothing in it.
 - Order input validation ([issue #3](https://github.com/co-rtex/tradegrid/issues/3), PR #29) defines the logical input rules. That draft says the backend has no serialized order model; `orders.Order` now has JSON field names (from #6), and this document fixes the wire format, symbol list, case rule, numeric bounds, and short-selling policy that #29 lists as future decisions.
 
 ## Conventions
@@ -199,6 +200,10 @@ Returns both demo accounts, sorted by `userId`.
 ```json
 { "accounts": [ { "userId": "alice", "...": "full Account" }, { "userId": "bob", "...": "full Account" } ] }
 ```
+
+### `GET /api/v1/portfolio?userId=alice`
+
+Proposed for Sprint 3 ([#69](https://github.com/co-rtex/tradegrid/issues/69)). Returns one account's cash, positions, cost basis, reference-price valuation, and realized and unrealized P&L. The response, field definitions, and errors are in [portfolio.md](portfolio.md#api-get-apiv1portfoliouseridalice). It uses no new error codes.
 
 ### `GET /api/v1/symbols`
 

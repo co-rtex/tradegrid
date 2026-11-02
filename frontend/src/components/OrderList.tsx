@@ -73,7 +73,7 @@ export default function OrderList({
       ) : orders.length === 0 ? (
         <p>No orders yet for {accountName}.</p>
       ) : (
-        <table className="order-table">
+        <table className="order-table" aria-labelledby="order-list-title">
           <thead>
             <tr>
               <th scope="col">Symbol</th>

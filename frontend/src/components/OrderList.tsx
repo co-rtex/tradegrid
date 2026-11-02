@@ -44,13 +44,15 @@ function filledQuantity(order: OrderDto) {
   return order.quantity - order.remaining
 }
 
-// The shared formatters throw on malformed values. Show the raw value instead
-// of letting one bad order blank the whole page.
+// The shared formatters throw on malformed values. Show a placeholder instead
+// of letting one bad order blank the whole page; the raw value could be misread
+// (a price of 1.5 looks like $1.50), so log it rather than display it.
 function safeFormat<T>(format: (value: T) => string, value: T): string {
   try {
     return format(value)
   } catch {
-    return String(value)
+    console.warn('OrderList: could not format value', value)
+    return '—'
   }
 }
 

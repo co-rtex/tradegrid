@@ -1,5 +1,5 @@
 import { render, screen, within } from '@testing-library/react'
-import { describe, expect, it } from 'vitest'
+import { describe, expect, it, vi } from 'vitest'
 import OrderList, { type OrderDto, type OrderListProps, type OrderStatus } from './OrderList'
 
 function makeOrder(overrides: Partial<OrderDto> = {}): OrderDto {
@@ -109,16 +109,22 @@ describe('OrderList', () => {
     expect(cellTexts(bodyRows()[0])[ACCEPTED]).toBe('Oct 20, 2026, 3:00:01 PM UTC')
   })
 
-  it('shows the raw value instead of crashing when a timestamp is malformed', () => {
+  it('shows a placeholder and logs the value when a timestamp is malformed', () => {
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {})
     renderList({ orders: [makeOrder({ createdAt: 'not-a-time' })] })
 
-    expect(cellTexts(bodyRows()[0])[ACCEPTED]).toBe('not-a-time')
+    expect(cellTexts(bodyRows()[0])[ACCEPTED]).toBe('—')
+    expect(warn).toHaveBeenCalledWith('OrderList: could not format value', 'not-a-time')
+    warn.mockRestore()
   })
 
-  it('shows the raw value instead of crashing when a price is not a whole number of cents', () => {
+  it('shows a placeholder and logs the value when a price is not a whole number of cents', () => {
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {})
     renderList({ orders: [makeOrder({ price: 1.5 })] })
 
-    expect(cellTexts(bodyRows()[0])[PRICE]).toBe('1.5')
+    expect(cellTexts(bodyRows()[0])[PRICE]).toBe('—')
+    expect(warn).toHaveBeenCalledWith('OrderList: could not format value', 1.5)
+    warn.mockRestore()
   })
 
   it('shows the column headings in the contract order', () => {

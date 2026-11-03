@@ -1,4 +1,5 @@
 import './ConnectionStatus.css'
+import { formatUtcTime } from '../lib/money'
 
 export type ConnectionState = 'connecting' | 'connected' | 'reconnecting' | 'disconnected' | 'error'
 
@@ -28,11 +29,9 @@ const statusText: Record<ConnectionState, { label: string; detail: string }> = {
   },
   error: {
     label: 'Connection error',
-    detail: 'Could not reach the update stream. This does not mean an order failed.',
+    detail: 'Could not reach the update stream. The data shown may be out of date. This does not mean an order failed.',
   },
 }
-
-const timeFormat = new Intl.DateTimeFormat('en-US', { timeStyle: 'medium' })
 
 export default function ConnectionStatus({ status, lastUpdatedAt }: ConnectionStatusProps) {
   const { label, detail } = statusText[status]
@@ -47,10 +46,12 @@ export default function ConnectionStatus({ status, lastUpdatedAt }: ConnectionSt
         </p>
         <p className="connection-status-detail">{detail}</p>
       </div>
-      {lastUpdatedAt && (
+      {lastUpdatedAt && !Number.isNaN(lastUpdatedAt.getTime()) && (
         <p className="connection-status-updated">
           Last update received{' '}
-          <time dateTime={lastUpdatedAt.toISOString()}>{timeFormat.format(lastUpdatedAt)}</time>
+          <time dateTime={lastUpdatedAt.toISOString()}>
+            {formatUtcTime(lastUpdatedAt.toISOString())}
+          </time>
         </p>
       )}
     </div>

@@ -2,8 +2,9 @@
 
 This directory contains the Go backend. Running it starts a local HTTP server
 with a health endpoint, `GET /health`, that reports whether the server is up.
-The trading API contract is in [docs/api.md](../docs/api.md), but its routes
-are not implemented in the running server yet. See the repository's
+The trading API contract is in [docs/api.md](../docs/api.md). The read
+routes are implemented (see [Read the exchange](#read-the-exchange)); order
+submission (`POST /api/v1/orders`, #36) is not yet. See the repository's
 [Developer Setup and Demo Guide](../docs/demo.md) for the current server,
 fixture scenarios, and feature status.
 
@@ -83,6 +84,25 @@ Content-Type: application/json; charset=utf-8
 the database or the exchange. It accepts `GET` (and `HEAD`); any other method,
 such as `POST`, gets `405 Method Not Allowed` with an `Allow: GET, HEAD`
 header. Paths with no route get `404 Not Found`.
+
+### Read the exchange
+
+The server holds one in-memory exchange with the two seeded demo accounts.
+These read routes return its current state, as specified in
+[docs/api.md](../docs/api.md):
+
+```bash
+curl -i http://127.0.0.1:8080/api/v1/symbols
+curl -i http://127.0.0.1:8080/api/v1/accounts
+curl -i "http://127.0.0.1:8080/api/v1/orders?userId=alice"
+curl -i "http://127.0.0.1:8080/api/v1/orderbook?symbol=AAPL"
+curl -i "http://127.0.0.1:8080/api/v1/executions?symbol=AAPL&userId=bob"
+```
+
+The handlers are in `internal/httpapi/read_handlers.go`. Invalid queries get
+the contract's JSON error body, for example `400 INVALID_QUERY` for a missing
+`symbol` and `404 UNKNOWN_USER` for an unknown `userId`. Restarting the server
+resets the exchange to the seeded state.
 
 ### Stop the server
 

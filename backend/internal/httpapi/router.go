@@ -8,16 +8,28 @@
 // unknown path with 404 Not Found.
 package httpapi
 
-import "net/http"
+import (
+	"net/http"
 
-// NewRouter returns the handler for every backend route. It has no
-// dependencies, so it can be served or tested with httptest without a
-// database or an exchange.
+	"github.com/co-rtex/tradegrid/backend/internal/exchange"
+)
+
+// NewRouter returns the handler for every backend route. The API routes read
+// from and write to svc, the in-memory exchange; /health does not use it.
+// Tests serve the router with httptest over a fresh exchange.New, so no
+// database is needed.
 //
 // The Sprint 2 API routes (#36, #37) are registered here as they are added,
-// each in its own handler file.
-func NewRouter() http.Handler {
+// each group in its own handler file.
+func NewRouter(svc *exchange.Service) http.Handler {
 	mux := http.NewServeMux()
 	mux.HandleFunc("GET /health", handleHealth)
+
+	// Read endpoints (#37), in read_handlers.go.
+	mux.HandleFunc("GET /api/v1/symbols", handleSymbols)
+	mux.HandleFunc("GET /api/v1/accounts", handleAccounts(svc))
+	mux.HandleFunc("GET /api/v1/orders", handleOrders(svc))
+	mux.HandleFunc("GET /api/v1/orderbook", handleOrderBook(svc))
+	mux.HandleFunc("GET /api/v1/executions", handleExecutions(svc))
 	return mux
 }

@@ -2,13 +2,13 @@
 
 This guide explains what a new contributor can run today and what Sprint 2
 behavior is defined by the contract and tested fixtures but is not yet wired
-into the running browser or HTTP server.
+into the running browser.
 
 ## What Works Today
 
-- The Go backend starts a local HTTP server with `GET /health` and the
-  read-only API routes, which show the seeded demo accounts, symbols, and an
-  empty exchange.
+- The Go backend starts a local HTTP server with `GET /health`, the read
+  API routes, which show the seeded demo accounts, symbols, and exchange
+  state, and order submission (`POST /api/v1/orders`).
 - The React frontend starts a local TradeGrid application shell.
 - PostgreSQL can run locally for migration-tool development.
 - The matching, account, risk, order, and execution packages have tests that
@@ -147,8 +147,10 @@ tradable symbols are `AAPL` and `MSFT`.
 ## Fixture-Defined Trading Scenarios
 
 The scenarios below come from the shared contract and fixture tests. They are
-useful for understanding and testing the implementation, but cannot yet be
-replayed through the live HTTP server or browser.
+useful for understanding and testing the implementation. They can be
+replayed through the live HTTP server with `curl` (see the backend
+[README](../backend/README.md#submit-an-order)), but not yet through the
+browser.
 
 ### Full Fill with Price Improvement
 
@@ -198,7 +200,6 @@ accounts remain at the starting values above.
 
 The following work is not implemented in the live application yet:
 
-- Order submission over HTTP (`POST /api/v1/orders`).
 - Browser TradingDesk, demo-account selection, and order submission.
 - Manual Refresh; the planned UI must reload authoritative snapshots after an
   order or a user-requested refresh, without polling or WebSockets.

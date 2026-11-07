@@ -1,0 +1,155 @@
+#!/bin/sh
+# Load TradeGrid's demo seed data into a fully migrated database.
+#
+# Usage: backend/db/seed
+#
+# Runs every seed file in version order, all in one transaction: either every
+# file succeeds and the transaction commits, or nothing changes. Seed files
+# insert with ON CONFLICT DO NOTHING, so rerunning is safe: it adds no rows and
+# never changes a balance.
+#
+# Refuses to run unless backend/db/migrate status reports every migration as
+# applied, because seeds are written against the latest schema.
+#
+# Environment:
+#   TRADEGRID_DB_NAME         Target database. Defaults to the container's
+#                             POSTGRES_DB (tradegrid).
+#   TRADEGRID_SEEDS_DIR       Directory of seed files. Defaults to
+#                             backend/db/seeds.
+#   TRADEGRID_MIGRATIONS_DIR  Passed on to backend/db/migrate status.
+#
+# Seed files are named like migrations (NNNN_lowercase_description.sql) and
+# follow the same rules: plain SQL only, no transaction control, no psql
+# metacommands. psql runs inside the compose "postgres" service, so no
+# PostgreSQL client is needed on the host. See backend/db/README.md.
+set -eu
+
+LC_ALL=C
+export LC_ALL
+
+ROOT=$(CDPATH= cd -- "$(dirname -- "$0")/../.." && pwd)
+SEEDS_DIR=${TRADEGRID_SEEDS_DIR:-$ROOT/backend/db/seeds}
+DB=${TRADEGRID_DB_NAME:-}
+WORK=
+
+LOWER=abcdefghijklmnopqrstuvwxyz
+DIGITS=0123456789
+HEX=0123456789abcdef
+
+die() {
+	echo "seed: $*" >&2
+	exit 1
+}
+
+# Same name rules as backend/db/migrate, checked as whole strings.
+is_identifier() {
+	case $1 in
+	'' | *[!${LOWER}${DIGITS}_]* | [!${LOWER}_]*) return 1 ;;
+	esac
+	[ ${#1} -le 63 ]
+}
+
+is_seed_name() {
+	case $1 in
+	[$DIGITS][$DIGITS][$DIGITS][$DIGITS]_?*.sql) ;;
+	*) return 1 ;;
+	esac
+	isn_desc=${1#?????}
+	isn_desc=${isn_desc%.sql}
+	case $isn_desc in
+	'' | *[!${LOWER}${DIGITS}_]*) return 1 ;;
+	esac
+}
+
+cleanup() {
+	if [ -n "$WORK" ]; then
+		rm -rf "$WORK"
+	fi
+}
+trap cleanup EXIT
+trap 'exit 129' HUP
+trap 'exit 130' INT
+trap 'exit 143' TERM
+
+case $# in
+0) ;;
+*)
+	awk 'NR > 1 && /^#/ { sub(/^# ?/, ""); print; next } NR > 1 { exit }' "$0"
+	[ "$1" = help ] || exit 2
+	exit 0
+	;;
+esac
+
+[ -z "$DB" ] || is_identifier "$DB" ||
+	die "refusing TRADEGRID_DB_NAME '$DB': database names must use only a-z, 0-9, and _, not start with a digit, and be at most 63 bytes"
+
+[ -d "$SEEDS_DIR" ] || die "no seeds directory: $SEEDS_DIR"
+FILES=
+for path in "$SEEDS_DIR"/*; do
+	[ -e "$path" ] || continue
+	f=${path##*/}
+	case $f in
+	.gitkeep | README.md) continue ;;
+	esac
+	is_seed_name "$f" || die "bad seed file name '$f' (want NNNN_lowercase_description.sql)"
+	[ -f "$path" ] || die "$f is not a regular file"
+	FILES="$FILES$f
+"
+done
+FILES=$(printf '%s' "$FILES" | LC_ALL=C sort)
+[ -n "$FILES" ] || die "no seed files in $SEEDS_DIR"
+
+# Every migration must be applied, and history must match the files.
+status=$("$ROOT/backend/db/migrate" status) ||
+	die "migrations need attention in ${DB:-default}; run backend/db/migrate status"
+applied_count=0
+while IFS= read -r line; do
+	case $line in
+	'database: '* | '') ;;
+	'applied   '*) applied_count=$((applied_count + 1)) ;;
+	*) die "every migration must be applied before seeding ${DB:-default} (found: $line); run backend/db/migrate up" ;;
+	esac
+done <<EOF
+$status
+EOF
+[ "$applied_count" -gt 0 ] || die "${DB:-default} has no applied migrations; run backend/db/migrate up"
+
+# Each file is passed to the server as one dollar-quoted string and run with
+# EXECUTE, as backend/db/migrate does, so psql never interprets it and the
+# server refuses any transaction control in it. The quote tags carry a random
+# nonce that the files are checked not to contain. On any error psql stops
+# before COMMIT, and the server rolls the whole transaction back.
+WORK=$(mktemp -d "${TMPDIR:-/tmp}/tradegrid-seed.XXXXXX") || die "cannot create a temporary directory"
+nonce=$(od -An -N8 -tx1 /dev/urandom | tr -d ' \n')
+case $nonce in
+'' | *[!$HEX]*) die "cannot generate a random tag" ;;
+esac
+run_tag="\$tg_seed_$nonce\$"
+sql_tag="\$tg_sql_$nonce\$"
+script="$WORK/seed.psql"
+{
+	echo 'BEGIN;'
+	echo 'SET LOCAL standard_conforming_strings = on;'
+	for f in $FILES; do
+		snap="$WORK/$f"
+		cp -- "$SEEDS_DIR/$f" "$snap" || die "cannot read $f"
+		if ! LC_ALL=C tr -d '\000' <"$snap" | cmp -s - "$snap"; then
+			die "$f contains NUL bytes"
+		fi
+		if grep -Fq -e "$run_tag" -e "$sql_tag" "$snap"; then
+			die "$f contains the runner's reserved quote tag; rerun seed"
+		fi
+		printf 'DO %s\nBEGIN\nEXECUTE %s' "$run_tag" "$sql_tag"
+		cat -- "$snap"
+		printf '\n%s;\nEND\n%s;\n' "$sql_tag" "$run_tag"
+	done
+	echo 'COMMIT;'
+} >"$script" || die "cannot write the seed script"
+
+for f in $FILES; do
+	echo "seeding   $f"
+done
+docker compose -f "$ROOT/compose.yaml" exec -T -e TG_DB="$DB" -e PGAPPNAME=tradegrid-seed postgres \
+	sh -c 'exec psql -X -q -v ON_ERROR_STOP=1 -v SHOW_CONTEXT=never -U "$POSTGRES_USER" -d "${TG_DB:-$POSTGRES_DB}"' \
+	<"$script" || die "seeding ${DB:-default} failed"
+echo "seeded ${DB:-default}"

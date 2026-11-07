@@ -1,0 +1,710 @@
+#!/bin/sh
+# Tests for the trading schema in backend/db/migrations and the demo seeds in
+# backend/db/seeds, against the design in docs/database-schema.md.
+#
+# Starts the compose PostgreSQL service if needed, then works only in a
+# disposable database with a unique name (tg_schema_<pid>_<random>_test),
+# recreated between scenarios. The tradegrid database is never touched. The
+# database is dropped on exit, including after Ctrl-C.
+#
+# It checks that an empty database migrates to the approved schema and records
+# every version; that invalid references, negative or unsafe values, impossible
+# status/remaining combinations, and duplicate keys are rejected by the named
+# constraint; that seeding twice changes nothing; and it prints and checks the
+# sample queries for a partial fill, both counterparties, an account's orders,
+# and ordered execution history.
+set -eu
+
+ROOT=$(CDPATH= cd -- "$(dirname -- "$0")/../.." && pwd)
+MIGRATE="$ROOT/backend/db/migrate"
+SEED="$ROOT/backend/db/seed"
+MIGRATIONS_DIR="$ROOT/backend/db/migrations"
+TEST_DB=tg_schema_$$_$(od -An -N4 -tx1 /dev/urandom | tr -d ' \n')_test
+TMP=
+STARTED=
+export TRADEGRID_DB_NAME=$TEST_DB
+# Always test the real migration and seed files.
+unset TRADEGRID_MIGRATIONS_DIR TRADEGRID_SEEDS_DIR
+
+compose() {
+	docker compose -f "$ROOT/compose.yaml" "$@"
+}
+
+cleanup() {
+	trap - EXIT HUP INT TERM
+	if [ -n "$STARTED" ]; then
+		"$MIGRATE" drop-test-db "$TEST_DB" >/dev/null 2>&1 ||
+			echo "warning: could not drop $TEST_DB; run: backend/db/migrate drop-test-db $TEST_DB" >&2
+	fi
+	[ -z "$TMP" ] || rm -rf "$TMP"
+}
+trap cleanup EXIT
+trap 'exit 129' HUP
+trap 'exit 130' INT
+trap 'exit 143' TERM
+
+TMP=$(mktemp -d)
+
+fail() {
+	echo "FAIL: $*" >&2
+	exit 1
+}
+pass() { echo "ok: $*"; }
+
+# psql_db [psql args...] runs psql on the test database, reading SQL from
+# stdin. Sessions use UTC so timestamps print the same everywhere.
+psql_db() {
+	compose exec -T -e PGTZ=UTC postgres \
+		sh -c 'db=$1; shift; exec psql -X -q -At -v ON_ERROR_STOP=1 -U "$POSTGRES_USER" -d "$db" "$@"' psql "$TEST_DB" "$@"
+}
+
+query() {
+	psql_db -c "$1" </dev/null
+}
+
+# expect LABEL SQL EXPECTED requires the unaligned output of SQL to equal
+# EXPECTED exactly.
+expect() {
+	e_out=$(query "$2") || fail "$1: query failed"
+	[ "$e_out" = "$3" ] || fail "$1: expected
+$3
+got
+$e_out"
+}
+
+# show TITLE SQL prints a query's result as a table, for inspection.
+show() {
+	echo "--- $1"
+	psql_db -P format=aligned -P tuples_only=off -P footer=off -c "$2" </dev/null | sed 's/^/    /' ||
+		fail "$1: query failed"
+}
+
+# fingerprint prints a digest of a full schema and data dump of the test
+# database. pg_dump's per-run \restrict key is removed first.
+fingerprint() {
+	compose exec -T postgres sh -c 'pg_dump -U "$POSTGRES_USER" -d "$1"' sh "$TEST_DB" </dev/null >"$TMP/dump" ||
+		fail "pg_dump failed"
+	sed -e '/^\\restrict /d' -e '/^\\unrestrict /d' "$TMP/dump" | cksum
+}
+
+sha() {
+	if command -v sha256sum >/dev/null 2>&1; then sha256sum <"$1"; else shasum -a 256 <"$1"; fi | cut -d ' ' -f 1
+}
+
+empty_db() {
+	"$MIGRATE" drop-test-db "$TEST_DB" >/dev/null
+	"$MIGRATE" create-test-db "$TEST_DB" >/dev/null
+}
+
+# seeded_db recreates the test database, migrated and seeded.
+seeded_db() {
+	empty_db
+	"$MIGRATE" up >/dev/null || fail "migrate up"
+	"$SEED" >/dev/null || fail "seed"
+}
+
+n_rejected=0
+# rejects PATTERN SQL requires SQL to fail with an error matching the
+# extended regular expression PATTERN. A statement that fails changes nothing.
+rejects() {
+	if r_out=$(query "$2" 2>&1); then fail "accepted: $2"; fi
+	printf '%s\n' "$r_out" | grep -Eq -- "$1" || fail "rejected for the wrong reason: $2
+$r_out"
+	n_rejected=$((n_rejected + 1))
+}
+
+# violates NAME SQL requires SQL to be rejected by the constraint NAME (an
+# extended regular expression, for statements that break several).
+violates() {
+	rejects "violates [a-z -]*constraint \"($1)\"" "$2"
+}
+
+n_accepted=0
+# accepts SQL requires SQL to succeed; it runs in a transaction that is then
+# rolled back.
+accepts() {
+	printf 'BEGIN;\n%s;\nROLLBACK;\n' "$1" | psql_db >"$TMP/accepts" 2>&1 ||
+		fail "rejected a valid statement: $1
+$(cat "$TMP/accepts")"
+	n_accepted=$((n_accepted + 1))
+}
+
+# Validation queries V1 to V8 from docs/database-schema.md ("Invariants
+# enforced outside constraints"). Each returns no rows on consistent data.
+EXEC_JOIN="FROM executions e
+	JOIN orders b ON b.order_id = e.buy_order_id
+	JOIN orders s ON s.order_id = e.sell_order_id"
+OPEN="status IN ('NEW', 'PARTIALLY_FILLED')"
+V1="SELECT o.order_id FROM orders o
+	LEFT JOIN executions e ON o.order_id IN (e.buy_order_id, e.sell_order_id)
+	GROUP BY o.order_id, o.quantity, o.remaining
+	HAVING o.quantity - o.remaining <> COALESCE(sum(e.quantity), 0)"
+V2="SELECT e.execution_id $EXEC_JOIN WHERE b.side <> 'BUY' OR s.side <> 'SELL'"
+V3="SELECT e.execution_id $EXEC_JOIN
+	WHERE NOT (s.price <= e.price AND e.price <= b.price
+	           AND e.price = CASE WHEN b.sequence < s.sequence THEN b.price ELSE s.price END)"
+V4="SELECT e.execution_id $EXEC_JOIN
+	WHERE b.order_type <> 'LIMIT' OR s.order_type <> 'LIMIT' OR e.executed_at < greatest(b.created_at, s.created_at)"
+V5="SELECT execution_id FROM (
+	SELECT e.execution_id, greatest(b.sequence, s.sequence) AS incoming,
+	       lag(greatest(b.sequence, s.sequence)) OVER (ORDER BY e.sequence) AS previous
+	$EXEC_JOIN) x
+	WHERE incoming < previous"
+V6="SELECT a.user_id, 'cash' FROM accounts a
+	LEFT JOIN (SELECT user_id, sum(price * remaining)::bigint AS need FROM orders
+	           WHERE side = 'BUY' AND $OPEN GROUP BY user_id) r USING (user_id)
+	WHERE a.cash_reserved <> COALESCE(r.need, 0)
+	UNION ALL
+	SELECT a.user_id, i.symbol FROM accounts a CROSS JOIN instruments i
+	LEFT JOIN positions p ON p.user_id = a.user_id AND p.symbol = i.symbol
+	LEFT JOIN (SELECT user_id, symbol, sum(remaining)::bigint AS need FROM orders
+	           WHERE side = 'SELL' AND $OPEN GROUP BY user_id, symbol) r
+	       ON r.user_id = a.user_id AND r.symbol = i.symbol
+	WHERE COALESCE(p.reserved, 0) <> COALESCE(r.need, 0)"
+V7="SELECT a.user_id, 'cash' FROM accounts a
+	WHERE a.cash_total <> 10000000
+	    + COALESCE((SELECT sum(price * quantity) FROM executions WHERE seller_user_id = a.user_id), 0)
+	    - COALESCE((SELECT sum(price * quantity) FROM executions WHERE buyer_user_id = a.user_id), 0)
+	UNION ALL
+	SELECT a.user_id, i.symbol FROM accounts a CROSS JOIN instruments i
+	LEFT JOIN positions p ON p.user_id = a.user_id AND p.symbol = i.symbol
+	WHERE COALESCE(p.total, 0) <> 100
+	    + COALESCE((SELECT sum(quantity) FROM executions e WHERE e.buyer_user_id = a.user_id AND e.symbol = i.symbol), 0)
+	    - COALESCE((SELECT sum(quantity) FROM executions e WHERE e.seller_user_id = a.user_id AND e.symbol = i.symbol), 0)"
+V8="SELECT symbol, side, price FROM orders WHERE $OPEN
+	GROUP BY 1, 2, 3 HAVING sum(remaining) > 9007199254740991"
+
+# validations_pass LABEL requires every validation query to return no rows.
+validations_pass() {
+	for v in V1 V2 V3 V4 V5 V6 V7 V8; do
+		eval "v_sql=\$$v"
+		v_out=$(query "$v_sql") || fail "$1: $v failed to run"
+		[ -z "$v_out" ] || fail "$1: $v found inconsistent rows: $v_out"
+	done
+}
+
+# detects V CORRUPTION requires validation query V to report a row after the
+# statements in CORRUPTION, which are rolled back.
+detects() {
+	eval "d_sql=\$$1"
+	d_out=$(printf 'BEGIN;\n%s;\n%s;\nROLLBACK;\n' "$2" "$d_sql" | psql_db 2>&1) || fail "$1 corruption failed: $d_out"
+	[ -n "$d_out" ] || fail "$1 did not detect: $2"
+}
+
+# The recommended reads from docs/database-schema.md, with literals in place
+# of bind parameters.
+ACCOUNTS_Q="SELECT user_id, display_name, cash_total, cash_reserved, cash_total - cash_reserved AS cash_available
+	FROM accounts ORDER BY user_id"
+POSITIONS_Q="SELECT a.user_id, i.symbol, COALESCE(p.total, 0) AS total, COALESCE(p.reserved, 0) AS reserved,
+	       COALESCE(p.total - p.reserved, 0) AS available
+	FROM accounts a CROSS JOIN instruments i
+	LEFT JOIN positions p ON p.user_id = a.user_id AND p.symbol = i.symbol
+	ORDER BY a.user_id, i.symbol"
+SYMBOLS_Q="SELECT symbol, name FROM instruments ORDER BY symbol"
+# account_orders USER: GET /api/v1/orders?userId=USER&limit=50
+account_orders() {
+	echo "SELECT order_id, user_id, symbol, side, order_type, price, quantity, remaining,
+	       status, sequence, created_at, updated_at
+	FROM orders WHERE user_id = '$1' ORDER BY sequence DESC LIMIT 50"
+}
+# execution_history SYMBOL USER-or-NULL: GET /api/v1/executions?symbol=...&userId=...
+execution_history() {
+	echo "SELECT execution_id, sequence, executed_at, symbol, price, quantity,
+	       buy_order_id, sell_order_id, buyer_user_id, seller_user_id
+	FROM executions
+	WHERE symbol = '$1' AND ($2::text IS NULL OR buyer_user_id = $2 OR seller_user_id = $2)
+	ORDER BY sequence DESC LIMIT 50"
+}
+# Each execution with both counterparties: its BUY order and buyer, and its
+# SELL order and seller, with each order's original and remaining quantity.
+COUNTERPARTIES_Q="SELECT e.execution_id, e.sequence, e.symbol, e.price, e.quantity,
+	       e.buy_order_id, e.buyer_user_id, b.status AS buy_status, b.quantity AS buy_quantity, b.remaining AS buy_remaining,
+	       e.sell_order_id, e.seller_user_id, s.status AS sell_status, s.quantity AS sell_quantity, s.remaining AS sell_remaining
+	$EXEC_JOIN ORDER BY e.sequence"
+BIDS_Q="SELECT price, sum(remaining)::bigint AS quantity, count(*) AS order_count FROM orders
+	WHERE symbol = 'AAPL' AND side = 'BUY' AND $OPEN GROUP BY price ORDER BY price DESC LIMIT 20"
+ASKS_Q="SELECT price, sum(remaining)::bigint AS quantity, count(*) AS order_count FROM orders
+	WHERE symbol = 'AAPL' AND side = 'SELL' AND $OPEN GROUP BY price ORDER BY price ASC LIMIT 20"
+AS_OF_Q="SELECT COALESCE(max(sequence), 0) AS as_of_sequence FROM orders"
+
+ORDER_COLS="order_id, sequence, user_id, symbol, side, order_type, price, quantity, remaining, status, created_at, updated_at"
+EXEC_COLS="execution_id, sequence, executed_at, symbol, price, quantity, buy_order_id, sell_order_id, buyer_user_id, seller_user_id"
+
+SEED_ACCOUNTS="alice|Alice (demo)|10000000|0|10000000
+bob|Bob (demo)|10000000|0|10000000"
+SEED_POSITIONS="alice|AAPL|100|0|100
+alice|MSFT|100|0|100
+bob|AAPL|100|0|100
+bob|MSFT|100|0|100"
+SEED_SYMBOLS="AAPL|Apple Inc.
+MSFT|Microsoft Corporation"
+
+# expect_seed_state LABEL checks the exact seed from docs/api.md.
+expect_seed_state() {
+	expect "$1: accounts" "$ACCOUNTS_Q" "$SEED_ACCOUNTS"
+	expect "$1: positions" "$POSITIONS_Q" "$SEED_POSITIONS"
+	expect "$1: symbols" "$SYMBOLS_Q" "$SEED_SYMBOLS"
+	expect "$1: row counts" "SELECT (SELECT count(*) FROM accounts) || ',' || (SELECT count(*) FROM instruments) || ','
+		|| (SELECT count(*) FROM positions) || ',' || (SELECT count(*) FROM orders) || ',' || (SELECT count(*) FROM executions)" \
+		"2,2,4,0,0"
+}
+
+compose up -d --wait postgres >/dev/null
+STARTED=1
+echo "test database: $TEST_DB"
+empty_db
+
+# ---------------------------------------------------------------------------
+# Migrations
+
+# Seeding refuses a database that is not fully migrated, and changes nothing.
+if "$SEED" >"$TMP/out" 2>&1; then fail "seed ran on an unmigrated database"; fi
+grep -q "every migration must be applied" "$TMP/out" || fail "seed on unmigrated database: $(cat "$TMP/out")"
+expect "unmigrated database" "SELECT count(*) FROM pg_tables WHERE schemaname = 'public'" 0
+pass "seed refuses a database with pending migrations"
+
+out=$("$MIGRATE" up) || fail "migrate up on an empty database"
+n_files=$(ls "$MIGRATIONS_DIR" | grep -c '\.sql$')
+echo "$out" | grep -q "^ran $n_files pending migration(s) on $TEST_DB\$" || fail "migrate up: $out"
+expected_versions=
+for path in "$MIGRATIONS_DIR"/*.sql; do
+	f=${path##*/}
+	expected_versions="$expected_versions${expected_versions:+
+}${f%%_*}|$f|$(sha "$path")"
+done
+expect "recorded migrations" "SELECT version || '|' || name || '|' || checksum FROM schema_migrations ORDER BY version" \
+	"$expected_versions"
+expect "migration versions" "SELECT string_agg(version, ',' ORDER BY version) FROM schema_migrations" \
+	"0001,0002,0003,0004,0005"
+out=$("$MIGRATE" up) || fail "second migrate up"
+echo "$out" | grep -q "^ran 0 pending" || fail "rerun applied something: $out"
+"$MIGRATE" status >"$TMP/out" || fail "status after up: $(cat "$TMP/out")"
+[ "$(grep -c '^applied   ' "$TMP/out")" = "$n_files" ] || fail "status: $(cat "$TMP/out")"
+pass "empty database migrates and records versions 0001 to 0005 with their checksums"
+
+expect "tables" "SELECT string_agg(tablename, ',' ORDER BY tablename COLLATE \"C\") FROM pg_tables WHERE schemaname = 'public'" \
+	"accounts,executions,instruments,orders,positions,schema_migrations"
+
+# Every column of the approved design, in order: type, collation, default.
+expect "columns" "SELECT table_name || '.' || column_name || '|' || data_type || '|' || COALESCE(collation_name, '')
+		|| '|' || COALESCE(column_default, '')
+	FROM information_schema.columns
+	WHERE table_schema = 'public' AND table_name <> 'schema_migrations'
+	ORDER BY array_position(ARRAY['accounts', 'instruments', 'positions', 'orders', 'executions'], table_name::text),
+	         ordinal_position" \
+	"accounts.user_id|text|C|
+accounts.display_name|text||
+accounts.cash_total|bigint||
+accounts.cash_reserved|bigint||0
+instruments.symbol|text|C|
+instruments.name|text||
+positions.user_id|text|C|
+positions.symbol|text|C|
+positions.total|bigint||0
+positions.reserved|bigint||0
+orders.order_id|text|C|
+orders.sequence|bigint||
+orders.user_id|text|C|
+orders.symbol|text|C|
+orders.side|text|C|
+orders.order_type|text|C|
+orders.price|bigint||
+orders.quantity|bigint||
+orders.remaining|bigint||
+orders.status|text|C|
+orders.created_at|timestamp with time zone||
+orders.updated_at|timestamp with time zone||
+executions.execution_id|text|C|
+executions.sequence|bigint||
+executions.executed_at|timestamp with time zone||
+executions.symbol|text|C|
+executions.price|bigint||
+executions.quantity|bigint||
+executions.buy_order_id|text|C|
+executions.sell_order_id|text|C|
+executions.buyer_user_id|text|C|
+executions.seller_user_id|text|C|"
+expect "nullable columns" "SELECT count(*) FROM information_schema.columns
+	WHERE table_schema = 'public' AND is_nullable = 'YES'" 0
+expect "identity columns" "SELECT count(*) FROM information_schema.columns
+	WHERE table_schema = 'public' AND (is_identity = 'YES' OR is_generated <> 'NEVER')" 0
+pass "columns are integer cents and shares (bigint), C-collated identifiers, NOT NULL, no generated keys"
+
+expect "constraints" "SELECT conrelid::regclass::text || '|' || contype::text || '|' || conname FROM pg_constraint
+	WHERE connamespace = 'public'::regnamespace AND contype IN ('p', 'u', 'f', 'c')
+	  AND conrelid <> 'public.schema_migrations'::regclass
+	ORDER BY conrelid::regclass::text COLLATE \"C\", conname COLLATE \"C\"" \
+	"accounts|c|accounts_cash_reserved_check
+accounts|c|accounts_cash_total_check
+accounts|c|accounts_display_name_check
+accounts|p|accounts_pkey
+accounts|c|accounts_user_id_check
+executions|f|executions_buy_order_fkey
+executions|c|executions_distinct_orders_check
+executions|c|executions_execution_id_check
+executions|p|executions_pkey
+executions|c|executions_price_check
+executions|c|executions_quantity_check
+executions|f|executions_sell_order_fkey
+executions|c|executions_sequence_check
+executions|u|executions_sequence_key
+instruments|c|instruments_name_check
+instruments|p|instruments_pkey
+instruments|c|instruments_symbol_check
+orders|c|orders_order_id_check
+orders|u|orders_order_id_user_id_symbol_key
+orders|c|orders_order_type_check
+orders|p|orders_pkey
+orders|c|orders_price_check
+orders|c|orders_quantity_check
+orders|c|orders_remaining_check
+orders|c|orders_sequence_check
+orders|u|orders_sequence_key
+orders|c|orders_side_check
+orders|c|orders_status_check
+orders|c|orders_status_remaining_check
+orders|f|orders_symbol_fkey
+orders|c|orders_updated_at_check
+orders|f|orders_user_id_fkey
+positions|p|positions_pkey
+positions|c|positions_reserved_check
+positions|f|positions_symbol_fkey
+positions|c|positions_total_check
+positions|f|positions_user_id_fkey"
+expect "foreign key targets and actions" "SELECT conname || '|' || pg_get_constraintdef(oid) FROM pg_constraint
+	WHERE connamespace = 'public'::regnamespace AND contype = 'f' ORDER BY conname COLLATE \"C\"" \
+	"executions_buy_order_fkey|FOREIGN KEY (buy_order_id, buyer_user_id, symbol) REFERENCES orders(order_id, user_id, symbol)
+executions_sell_order_fkey|FOREIGN KEY (sell_order_id, seller_user_id, symbol) REFERENCES orders(order_id, user_id, symbol)
+orders_symbol_fkey|FOREIGN KEY (symbol) REFERENCES instruments(symbol)
+orders_user_id_fkey|FOREIGN KEY (user_id) REFERENCES accounts(user_id)
+positions_symbol_fkey|FOREIGN KEY (symbol) REFERENCES instruments(symbol)
+positions_user_id_fkey|FOREIGN KEY (user_id) REFERENCES accounts(user_id)"
+pass "every constraint in the design exists under its recommended name; no foreign key cascades"
+
+expect "indexes" "SELECT indexdef FROM pg_indexes WHERE schemaname = 'public' AND tablename <> 'schema_migrations'
+	ORDER BY indexname COLLATE \"C\"" \
+	"CREATE UNIQUE INDEX accounts_pkey ON public.accounts USING btree (user_id)
+CREATE INDEX executions_buy_order_id_idx ON public.executions USING btree (buy_order_id)
+CREATE INDEX executions_buyer_symbol_sequence_idx ON public.executions USING btree (buyer_user_id, symbol, sequence DESC)
+CREATE UNIQUE INDEX executions_pkey ON public.executions USING btree (execution_id)
+CREATE INDEX executions_sell_order_id_idx ON public.executions USING btree (sell_order_id)
+CREATE INDEX executions_seller_symbol_sequence_idx ON public.executions USING btree (seller_user_id, symbol, sequence DESC)
+CREATE UNIQUE INDEX executions_sequence_key ON public.executions USING btree (sequence)
+CREATE INDEX executions_symbol_sequence_idx ON public.executions USING btree (symbol, sequence DESC)
+CREATE UNIQUE INDEX instruments_pkey ON public.instruments USING btree (symbol)
+CREATE INDEX orders_open_book_idx ON public.orders USING btree (symbol, side, price) INCLUDE (remaining) WHERE (status = ANY (ARRAY['NEW'::text, 'PARTIALLY_FILLED'::text]))
+CREATE UNIQUE INDEX orders_order_id_user_id_symbol_key ON public.orders USING btree (order_id, user_id, symbol)
+CREATE UNIQUE INDEX orders_pkey ON public.orders USING btree (order_id)
+CREATE UNIQUE INDEX orders_sequence_key ON public.orders USING btree (sequence)
+CREATE INDEX orders_user_id_sequence_idx ON public.orders USING btree (user_id, sequence DESC)
+CREATE UNIQUE INDEX positions_pkey ON public.positions USING btree (user_id, symbol)"
+
+# The planned reads can use their focused indexes. Sequential scans are
+# disabled because the tables are tiny and a scan would otherwise win.
+plan=$(query "SET enable_seqscan = off; EXPLAIN (COSTS OFF) $(account_orders bob)")
+echo "$plan" | grep -q "orders_user_id_sequence_idx" || fail "account orders do not use orders_user_id_sequence_idx:
+$plan"
+plan=$(query "SET enable_seqscan = off; EXPLAIN (COSTS OFF) $(execution_history AAPL NULL)")
+echo "$plan" | grep -q "executions_symbol_sequence_idx" || fail "symbol executions do not use executions_symbol_sequence_idx:
+$plan"
+pass "indexes match the design; account-order and symbol-execution reads use them"
+
+# ---------------------------------------------------------------------------
+# Seeds
+
+out=$("$SEED") || fail "first seed"
+echo "$out" | grep -q "^seeded $TEST_DB\$" || fail "seed: $out"
+expect_seed_state "first seed"
+pass "seed loads exactly the demo accounts, balances, and symbols, with no orders or executions"
+
+before=$(fingerprint)
+"$SEED" >/dev/null || fail "second seed"
+"$SEED" >/dev/null || fail "third seed"
+[ "$(fingerprint)" = "$before" ] || fail "rerunning the seed changed the database"
+expect_seed_state "rerun seed"
+pass "rerunning the seed changes nothing: no duplicate rows, no added balances"
+
+# A rerun never resets balances that trading has since changed.
+query "UPDATE accounts SET cash_total = 10190000 WHERE user_id = 'alice';
+	UPDATE positions SET total = 90 WHERE user_id = 'alice' AND symbol = 'AAPL'" >/dev/null
+"$SEED" >/dev/null || fail "seed after a balance change"
+expect "balances after rerun" "SELECT (SELECT cash_total FROM accounts WHERE user_id = 'alice') || ','
+	|| (SELECT total FROM positions WHERE user_id = 'alice' AND symbol = 'AAPL') || ','
+	|| (SELECT count(*) FROM accounts) || ',' || (SELECT count(*) FROM positions)" "10190000,90,2,4"
+pass "rerunning the seed keeps changed balances as they are"
+
+# Seeding is all or nothing: a failing seed file, or one that tries to
+# commit early, leaves no row behind, including rows from earlier files.
+empty_db
+"$MIGRATE" up >/dev/null || fail "migrate up"
+mkdir "$TMP/seeds"
+cp "$ROOT/backend/db/seeds"/*.sql "$TMP/seeds/"
+for broken in "INSERT INTO instruments (symbol, name) VALUES ('TSLA', 'Tesla, Inc.');
+SELECT 1 / 0;" "INSERT INTO instruments (symbol, name) VALUES ('TSLA', 'Tesla, Inc.');
+COMMIT;
+INSERT INTO instruments (symbol, name) VALUES ('NVDA', 'NVIDIA Corporation');"; do
+	printf '%s\n' "$broken" >"$TMP/seeds/9999_broken.sql"
+	before=$(fingerprint)
+	if TRADEGRID_SEEDS_DIR=$TMP/seeds "$SEED" >"$TMP/out" 2>&1; then fail "broken seed reported success"; fi
+	[ "$(fingerprint)" = "$before" ] || fail "failed seed changed the database: $(cat "$TMP/out")"
+done
+expect "after failed seeds" "SELECT (SELECT count(*) FROM accounts) + (SELECT count(*) FROM instruments)" 0
+pass "a failing seed file, or one that commits early, changes nothing"
+
+# ---------------------------------------------------------------------------
+# Example 3 from docs/database-schema.md (fixture 03): partial fill.
+# Alice's SELL 10 AAPL at $190.00 rests; Bob buys 25 at $190.50; 10 fill at
+# $190.00 and 15 rest with a retained reservation of 19050 x 15 = 285750.
+
+seeded_db
+psql_db >/dev/null <<SQL || fail "loading Example 3"
+INSERT INTO orders ($ORDER_COLS) VALUES
+	('ord-1', 1, 'alice', 'AAPL', 'SELL', 'LIMIT', 19000, 10, 0, 'FILLED', '2026-10-20T15:00:01Z', '2026-10-20T15:00:02Z'),
+	('ord-2', 2, 'bob', 'AAPL', 'BUY', 'LIMIT', 19050, 25, 15, 'PARTIALLY_FILLED', '2026-10-20T15:00:02Z', '2026-10-20T15:00:02Z');
+INSERT INTO executions ($EXEC_COLS) VALUES
+	('exe-1', 1, '2026-10-20T15:00:02Z', 'AAPL', 19000, 10, 'ord-2', 'ord-1', 'bob', 'alice');
+UPDATE accounts SET cash_total = 10190000 WHERE user_id = 'alice';
+UPDATE accounts SET cash_total = 9810000, cash_reserved = 285750 WHERE user_id = 'bob';
+UPDATE positions SET total = 90 WHERE user_id = 'alice' AND symbol = 'AAPL';
+UPDATE positions SET total = 110 WHERE user_id = 'bob' AND symbol = 'AAPL';
+SQL
+
+echo "sample queries, Example 3 (partial fill):"
+show "execution with both counterparties" "$COUNTERPARTIES_Q"
+show "bob's orders, newest first" "$(account_orders bob)"
+show "AAPL execution history, newest first" "$(execution_history AAPL NULL)"
+show "accounts" "$ACCOUNTS_Q"
+show "positions" "$POSITIONS_Q"
+show "AAPL bids" "$BIDS_Q"
+
+expect "partial fill counterparties" "$COUNTERPARTIES_Q" \
+	"exe-1|1|AAPL|19000|10|ord-2|bob|PARTIALLY_FILLED|25|15|ord-1|alice|FILLED|10|0"
+expect "bob's orders" "$(account_orders bob)" \
+	"ord-2|bob|AAPL|BUY|LIMIT|19050|25|15|PARTIALLY_FILLED|2|2026-10-20 15:00:02+00|2026-10-20 15:00:02+00"
+expect "alice's orders" "$(account_orders alice)" \
+	"ord-1|alice|AAPL|SELL|LIMIT|19000|10|0|FILLED|1|2026-10-20 15:00:01+00|2026-10-20 15:00:02+00"
+expect "AAPL executions for bob" "$(execution_history AAPL "'bob'")" \
+	"exe-1|1|2026-10-20 15:00:02+00|AAPL|19000|10|ord-2|ord-1|bob|alice"
+expect "MSFT executions" "$(execution_history MSFT NULL)" ""
+expect "accounts after partial fill" "$ACCOUNTS_Q" "alice|Alice (demo)|10190000|0|10190000
+bob|Bob (demo)|9810000|285750|9524250"
+expect "positions after partial fill" "$POSITIONS_Q" "alice|AAPL|90|0|90
+alice|MSFT|100|0|100
+bob|AAPL|110|0|110
+bob|MSFT|100|0|100"
+expect "AAPL bids" "$BIDS_Q" "19050|15|1"
+expect "AAPL asks" "$ASKS_Q" ""
+expect "asOfSequence" "$AS_OF_Q" 2
+expect "filled quantity" "SELECT order_id || '|' || (quantity - remaining) FROM orders ORDER BY sequence" "ord-1|10
+ord-2|10"
+validations_pass "Example 3"
+pass "partial fill: both orders and both accounts, account orders, history, balances, book, and V1 to V8"
+
+# ---------------------------------------------------------------------------
+# Constraints, on the Example 3 data. Each statement differs from a valid one
+# in one value and must fail with the named constraint; nothing may change.
+
+before=$(fingerprint)
+
+ORDER_INSERT="INSERT INTO orders ($ORDER_COLS) VALUES"
+EXEC_INSERT="INSERT INTO executions ($EXEC_COLS) VALUES"
+T9="'2026-10-20T15:00:09Z'"
+# A valid resting order and a valid execution between ord-2 and ord-1.
+accepts "$ORDER_INSERT ('ord-9', 9, 'alice', 'MSFT', 'SELL', 'LIMIT', 40000, 4, 4, 'NEW', $T9, $T9)"
+accepts "$EXEC_INSERT ('exe-9', 9, $T9, 'AAPL', 19000, 5, 'ord-2', 'ord-1', 'bob', 'alice')"
+# Boundaries that must be accepted.
+accepts "$ORDER_INSERT ('ord-9', 9, 'alice', 'MSFT', 'SELL', 'LIMIT', 100000000, 1000000, 1000000, 'NEW', $T9, $T9)"
+accepts "$ORDER_INSERT ('ord-9', 9007199254740991, 'alice', 'MSFT', 'BUY', 'LIMIT', 1, 1, 1, 'NEW', $T9, $T9)"
+accepts "$ORDER_INSERT ('ord-9', 9, 'alice', 'MSFT', 'BUY', 'MARKET', 0, 4, 3, 'CANCELED', $T9, '2026-10-20T15:00:10Z')"
+accepts "$ORDER_INSERT ('ord-9', 9, 'alice', 'MSFT', 'BUY', 'LIMIT', 40000, 4, 1, 'PARTIALLY_FILLED', $T9, $T9)"
+accepts "$ORDER_INSERT ('$(printf 'o%.0s' $(seq 1 64))', 9, 'alice', 'MSFT', 'SELL', 'LIMIT', 40000, 4, 4, 'NEW', $T9, $T9)"
+accepts "UPDATE accounts SET cash_total = 9007199254740991, cash_reserved = 9007199254740991 WHERE user_id = 'alice'"
+accepts "UPDATE positions SET total = 9007199254740991, reserved = 9007199254740991 WHERE user_id = 'alice' AND symbol = 'MSFT'"
+accepts "INSERT INTO accounts (user_id, display_name, cash_total) VALUES ('carol', 'Carol (demo)', 0)"
+accepts "$EXEC_INSERT ('exe-9', 9, $T9, 'AAPL', 100000000, 1000000, 'ord-2', 'ord-1', 'bob', 'alice')"
+
+# accounts
+violates accounts_pkey "INSERT INTO accounts (user_id, display_name, cash_total) VALUES ('alice', 'Alice again', 1)"
+violates accounts_user_id_check "INSERT INTO accounts (user_id, display_name, cash_total) VALUES ('', 'Nobody', 0)"
+violates accounts_user_id_check "INSERT INTO accounts (user_id, display_name, cash_total) VALUES ('$(printf 'u%.0s' $(seq 1 65))', 'Long', 0)"
+violates accounts_display_name_check "INSERT INTO accounts (user_id, display_name, cash_total) VALUES ('carol', '', 0)"
+# A negative total breaks both cash checks; PostgreSQL reports the first by name.
+violates 'accounts_cash_reserved_check|accounts_cash_total_check' "UPDATE accounts SET cash_total = -1 WHERE user_id = 'alice'"
+violates accounts_cash_total_check "UPDATE accounts SET cash_total = 9007199254740992 WHERE user_id = 'alice'"
+violates accounts_cash_reserved_check "UPDATE accounts SET cash_reserved = -1 WHERE user_id = 'alice'"
+violates accounts_cash_reserved_check "UPDATE accounts SET cash_reserved = cash_total + 1 WHERE user_id = 'bob'"
+rejects 'violates not-null constraint' "INSERT INTO accounts (user_id, display_name, cash_total) VALUES ('carol', 'Carol (demo)', NULL)"
+rejects 'invalid input syntax for type bigint' "UPDATE accounts SET cash_total = '100.5' WHERE user_id = 'alice'"
+rejects 'bigint out of range' "UPDATE accounts SET cash_total = 9223372036854775808 WHERE user_id = 'alice'"
+
+# instruments
+violates instruments_symbol_check "INSERT INTO instruments (symbol, name) VALUES ('aapl', 'Apple Inc.')"
+violates instruments_symbol_check "INSERT INTO instruments (symbol, name) VALUES ('BRK.B', 'Berkshire Hathaway')"
+violates instruments_symbol_check "INSERT INTO instruments (symbol, name) VALUES ('', 'Empty')"
+violates instruments_pkey "INSERT INTO instruments (symbol, name) VALUES ('AAPL', 'Apple again')"
+violates instruments_name_check "INSERT INTO instruments (symbol, name) VALUES ('TSLA', '')"
+
+# positions
+violates positions_pkey "INSERT INTO positions (user_id, symbol, total) VALUES ('alice', 'AAPL', 1)"
+violates positions_user_id_fkey "INSERT INTO positions (user_id, symbol, total) VALUES ('carol', 'AAPL', 1)"
+violates positions_symbol_fkey "INSERT INTO positions (user_id, symbol, total) VALUES ('alice', 'TSLA', 1)"
+violates positions_symbol_fkey "UPDATE positions SET symbol = 'aapl' WHERE user_id = 'alice' AND symbol = 'AAPL'"
+violates 'positions_reserved_check|positions_total_check' "UPDATE positions SET total = -1 WHERE user_id = 'alice' AND symbol = 'AAPL'"
+violates positions_total_check "UPDATE positions SET total = 9007199254740992 WHERE user_id = 'alice' AND symbol = 'AAPL'"
+violates positions_reserved_check "UPDATE positions SET reserved = total + 1 WHERE user_id = 'alice' AND symbol = 'AAPL'"
+violates positions_reserved_check "UPDATE positions SET reserved = -1 WHERE user_id = 'alice' AND symbol = 'AAPL'"
+
+# orders: references and keys
+violates orders_user_id_fkey "$ORDER_INSERT ('ord-9', 9, 'carol', 'MSFT', 'SELL', 'LIMIT', 40000, 4, 4, 'NEW', $T9, $T9)"
+violates orders_symbol_fkey "$ORDER_INSERT ('ord-9', 9, 'alice', 'aapl', 'SELL', 'LIMIT', 40000, 4, 4, 'NEW', $T9, $T9)"
+violates orders_symbol_fkey "$ORDER_INSERT ('ord-9', 9, 'alice', 'TSLA', 'SELL', 'LIMIT', 40000, 4, 4, 'NEW', $T9, $T9)"
+violates orders_pkey "$ORDER_INSERT ('ord-1', 9, 'alice', 'MSFT', 'SELL', 'LIMIT', 40000, 4, 4, 'NEW', $T9, $T9)"
+violates orders_sequence_key "$ORDER_INSERT ('ord-9', 2, 'alice', 'MSFT', 'SELL', 'LIMIT', 40000, 4, 4, 'NEW', $T9, $T9)"
+violates orders_order_id_check "$ORDER_INSERT ('', 9, 'alice', 'MSFT', 'SELL', 'LIMIT', 40000, 4, 4, 'NEW', $T9, $T9)"
+violates orders_order_id_check "$ORDER_INSERT ('$(printf 'o%.0s' $(seq 1 65))', 9, 'alice', 'MSFT', 'SELL', 'LIMIT', 40000, 4, 4, 'NEW', $T9, $T9)"
+violates orders_sequence_check "$ORDER_INSERT ('ord-9', 0, 'alice', 'MSFT', 'SELL', 'LIMIT', 40000, 4, 4, 'NEW', $T9, $T9)"
+violates orders_sequence_check "$ORDER_INSERT ('ord-9', -9, 'alice', 'MSFT', 'SELL', 'LIMIT', 40000, 4, 4, 'NEW', $T9, $T9)"
+violates orders_sequence_check "$ORDER_INSERT ('ord-9', 9007199254740992, 'alice', 'MSFT', 'SELL', 'LIMIT', 40000, 4, 4, 'NEW', $T9, $T9)"
+# orders: enumerations, prices, and quantities
+violates orders_side_check "$ORDER_INSERT ('ord-9', 9, 'alice', 'MSFT', 'sell', 'LIMIT', 40000, 4, 4, 'NEW', $T9, $T9)"
+violates orders_side_check "$ORDER_INSERT ('ord-9', 9, 'alice', 'MSFT', 'UNSPECIFIED', 'LIMIT', 40000, 4, 4, 'NEW', $T9, $T9)"
+violates orders_order_type_check "$ORDER_INSERT ('ord-9', 9, 'alice', 'MSFT', 'SELL', 'STOP', 40000, 4, 4, 'NEW', $T9, $T9)"
+violates orders_price_check "$ORDER_INSERT ('ord-9', 9, 'alice', 'MSFT', 'SELL', 'LIMIT', 0, 4, 4, 'NEW', $T9, $T9)"
+violates orders_price_check "$ORDER_INSERT ('ord-9', 9, 'alice', 'MSFT', 'SELL', 'LIMIT', -40000, 4, 4, 'NEW', $T9, $T9)"
+violates orders_price_check "$ORDER_INSERT ('ord-9', 9, 'alice', 'MSFT', 'SELL', 'LIMIT', 100000001, 4, 4, 'NEW', $T9, $T9)"
+violates orders_price_check "$ORDER_INSERT ('ord-9', 9, 'alice', 'MSFT', 'SELL', 'MARKET', 40000, 4, 4, 'NEW', $T9, $T9)"
+violates orders_quantity_check "$ORDER_INSERT ('ord-9', 9, 'alice', 'MSFT', 'SELL', 'LIMIT', 40000, 0, 0, 'NEW', $T9, $T9)"
+violates orders_quantity_check "$ORDER_INSERT ('ord-9', 9, 'alice', 'MSFT', 'SELL', 'LIMIT', 40000, 1000001, 1000001, 'NEW', $T9, $T9)"
+rejects 'invalid input syntax for type bigint' "$ORDER_INSERT ('ord-9', 9, 'alice', 'MSFT', 'SELL', 'LIMIT', '400.5', 4, 4, 'NEW', $T9, $T9)"
+# orders: remaining and status
+violates orders_remaining_check "$ORDER_INSERT ('ord-9', 9, 'alice', 'MSFT', 'SELL', 'LIMIT', 40000, 4, 5, 'NEW', $T9, $T9)"
+violates orders_remaining_check "$ORDER_INSERT ('ord-9', 9, 'alice', 'MSFT', 'SELL', 'LIMIT', 40000, 4, -1, 'FILLED', $T9, $T9)"
+violates orders_status_check "$ORDER_INSERT ('ord-9', 9, 'alice', 'MSFT', 'SELL', 'LIMIT', 40000, 4, 4, 'REJECTED', $T9, $T9)"
+violates orders_status_check "$ORDER_INSERT ('ord-9', 9, 'alice', 'MSFT', 'SELL', 'LIMIT', 40000, 4, 4, 'new', $T9, $T9)"
+violates orders_status_remaining_check "$ORDER_INSERT ('ord-9', 9, 'alice', 'MSFT', 'SELL', 'LIMIT', 40000, 4, 2, 'FILLED', $T9, $T9)"
+violates orders_status_remaining_check "$ORDER_INSERT ('ord-9', 9, 'alice', 'MSFT', 'SELL', 'LIMIT', 40000, 4, 2, 'NEW', $T9, $T9)"
+violates orders_status_remaining_check "$ORDER_INSERT ('ord-9', 9, 'alice', 'MSFT', 'SELL', 'LIMIT', 40000, 4, 4, 'PARTIALLY_FILLED', $T9, $T9)"
+violates orders_status_remaining_check "$ORDER_INSERT ('ord-9', 9, 'alice', 'MSFT', 'SELL', 'LIMIT', 40000, 4, 0, 'PARTIALLY_FILLED', $T9, $T9)"
+violates orders_status_remaining_check "$ORDER_INSERT ('ord-9', 9, 'alice', 'MSFT', 'SELL', 'LIMIT', 40000, 4, 0, 'CANCELED', $T9, $T9)"
+violates orders_status_remaining_check "UPDATE orders SET status = 'FILLED' WHERE order_id = 'ord-2'"
+violates orders_status_remaining_check "UPDATE orders SET remaining = 0 WHERE order_id = 'ord-2'"
+violates orders_status_remaining_check "UPDATE orders SET status = 'NEW' WHERE order_id = 'ord-2'"
+violates orders_remaining_check "UPDATE orders SET remaining = 26 WHERE order_id = 'ord-2'"
+violates orders_updated_at_check "$ORDER_INSERT ('ord-9', 9, 'alice', 'MSFT', 'SELL', 'LIMIT', 40000, 4, 2, 'PARTIALLY_FILLED', $T9, '2026-10-20T15:00:08Z')"
+violates orders_updated_at_check "$ORDER_INSERT ('ord-9', 9, 'alice', 'MSFT', 'SELL', 'LIMIT', 40000, 4, 4, 'NEW', $T9, '2026-10-20T15:00:10Z')"
+rejects 'violates not-null constraint' "$ORDER_INSERT ('ord-9', 9, 'alice', 'MSFT', 'SELL', 'LIMIT', 40000, 4, 4, NULL, $T9, $T9)"
+
+# executions: both counterparties must own their orders, in the same symbol
+violates executions_buy_order_fkey "$EXEC_INSERT ('exe-9', 9, $T9, 'AAPL', 19000, 5, 'ord-2', 'ord-1', 'alice', 'alice')"
+violates executions_sell_order_fkey "$EXEC_INSERT ('exe-9', 9, $T9, 'AAPL', 19000, 5, 'ord-2', 'ord-1', 'bob', 'bob')"
+violates 'executions_buy_order_fkey|executions_sell_order_fkey' "$EXEC_INSERT ('exe-9', 9, $T9, 'MSFT', 19000, 5, 'ord-2', 'ord-1', 'bob', 'alice')"
+violates executions_buy_order_fkey "$EXEC_INSERT ('exe-9', 9, $T9, 'AAPL', 19000, 5, 'ord-404', 'ord-1', 'bob', 'alice')"
+violates executions_sell_order_fkey "$EXEC_INSERT ('exe-9', 9, $T9, 'AAPL', 19000, 5, 'ord-2', 'ord-404', 'bob', 'alice')"
+violates executions_distinct_orders_check "$EXEC_INSERT ('exe-9', 9, $T9, 'AAPL', 19000, 5, 'ord-2', 'ord-2', 'bob', 'bob')"
+violates executions_pkey "$EXEC_INSERT ('exe-1', 9, $T9, 'AAPL', 19000, 5, 'ord-2', 'ord-1', 'bob', 'alice')"
+violates executions_sequence_key "$EXEC_INSERT ('exe-9', 1, $T9, 'AAPL', 19000, 5, 'ord-2', 'ord-1', 'bob', 'alice')"
+violates executions_execution_id_check "$EXEC_INSERT ('', 9, $T9, 'AAPL', 19000, 5, 'ord-2', 'ord-1', 'bob', 'alice')"
+violates executions_sequence_check "$EXEC_INSERT ('exe-9', 0, $T9, 'AAPL', 19000, 5, 'ord-2', 'ord-1', 'bob', 'alice')"
+violates executions_sequence_check "$EXEC_INSERT ('exe-9', 9007199254740992, $T9, 'AAPL', 19000, 5, 'ord-2', 'ord-1', 'bob', 'alice')"
+violates executions_price_check "$EXEC_INSERT ('exe-9', 9, $T9, 'AAPL', 0, 5, 'ord-2', 'ord-1', 'bob', 'alice')"
+violates executions_price_check "$EXEC_INSERT ('exe-9', 9, $T9, 'AAPL', 100000001, 5, 'ord-2', 'ord-1', 'bob', 'alice')"
+violates executions_quantity_check "$EXEC_INSERT ('exe-9', 9, $T9, 'AAPL', 19000, 0, 'ord-2', 'ord-1', 'bob', 'alice')"
+violates executions_quantity_check "$EXEC_INSERT ('exe-9', 9, $T9, 'AAPL', 19000, -5, 'ord-2', 'ord-1', 'bob', 'alice')"
+violates executions_quantity_check "$EXEC_INSERT ('exe-9', 9, $T9, 'AAPL', 19000, 1000001, 'ord-2', 'ord-1', 'bob', 'alice')"
+rejects 'violates not-null constraint' "$EXEC_INSERT ('exe-9', 9, $T9, 'AAPL', 19000, 5, 'ord-2', 'ord-1', NULL, 'alice')"
+# An order with fills cannot change owner or symbol under its executions.
+violates executions_buy_order_fkey "UPDATE orders SET user_id = 'alice' WHERE order_id = 'ord-2'"
+violates 'executions_buy_order_fkey|executions_sell_order_fkey' "UPDATE orders SET symbol = 'MSFT' WHERE order_id = 'ord-1'"
+
+# History cannot be deleted from under its references; nothing cascades.
+violates executions_sell_order_fkey "DELETE FROM orders WHERE order_id = 'ord-1'"
+violates executions_buy_order_fkey "DELETE FROM orders WHERE order_id = 'ord-2'"
+violates orders_user_id_fkey "DELETE FROM positions WHERE user_id = 'bob'; DELETE FROM accounts WHERE user_id = 'bob'"
+violates orders_symbol_fkey "DELETE FROM positions WHERE symbol = 'AAPL'; DELETE FROM instruments WHERE symbol = 'AAPL'"
+violates 'positions_user_id_fkey|orders_user_id_fkey' "DELETE FROM accounts WHERE user_id = 'alice'"
+
+[ "$(fingerprint)" = "$before" ] || fail "a rejected statement changed the database"
+pass "$n_rejected invalid statements rejected by the expected constraint or type; $n_accepted valid boundary cases accepted; nothing changed"
+
+# ---------------------------------------------------------------------------
+# Example 4: one order, several executions with the same timestamp. Only
+# sequence records that exe-1 came before exe-2.
+
+seeded_db
+T3="'2026-10-20T15:00:03Z'"
+psql_db >/dev/null <<SQL || fail "loading Example 4"
+INSERT INTO orders ($ORDER_COLS) VALUES
+	('ord-1', 1, 'alice', 'AAPL', 'SELL', 'LIMIT', 19000, 5, 0, 'FILLED', '2026-10-20T15:00:01Z', $T3),
+	('ord-2', 2, 'alice', 'AAPL', 'SELL', 'LIMIT', 19100, 8, 3, 'PARTIALLY_FILLED', '2026-10-20T15:00:02Z', $T3),
+	('ord-3', 3, 'bob', 'AAPL', 'BUY', 'LIMIT', 19200, 10, 0, 'FILLED', $T3, $T3);
+INSERT INTO executions ($EXEC_COLS) VALUES
+	('exe-1', 1, $T3, 'AAPL', 19000, 5, 'ord-3', 'ord-1', 'bob', 'alice'),
+	('exe-2', 2, $T3, 'AAPL', 19100, 5, 'ord-3', 'ord-2', 'bob', 'alice');
+UPDATE accounts SET cash_total = 10190500 WHERE user_id = 'alice';
+UPDATE accounts SET cash_total = 9809500 WHERE user_id = 'bob';
+UPDATE positions SET total = 90, reserved = 3 WHERE user_id = 'alice' AND symbol = 'AAPL';
+UPDATE positions SET total = 110 WHERE user_id = 'bob' AND symbol = 'AAPL';
+SQL
+
+echo "sample queries, Example 4 (one order, several executions):"
+show "AAPL execution history, newest first" "$(execution_history AAPL NULL)"
+show "alice's orders, newest first" "$(account_orders alice)"
+show "executions with both counterparties" "$COUNTERPARTIES_Q"
+
+expect "history newest first" "$(execution_history AAPL NULL)" \
+	"exe-2|2|2026-10-20 15:00:03+00|AAPL|19100|5|ord-3|ord-2|bob|alice
+exe-1|1|2026-10-20 15:00:03+00|AAPL|19000|5|ord-3|ord-1|bob|alice"
+expect "history oldest first" "SELECT execution_id FROM executions WHERE symbol = 'AAPL' ORDER BY sequence" "exe-1
+exe-2"
+expect "tied timestamps" "SELECT count(DISTINCT executed_at) || ',' || count(*) FROM executions" "1,2"
+expect "alice's orders" "$(account_orders alice)" \
+	"ord-2|alice|AAPL|SELL|LIMIT|19100|8|3|PARTIALLY_FILLED|2|2026-10-20 15:00:02+00|2026-10-20 15:00:03+00
+ord-1|alice|AAPL|SELL|LIMIT|19000|5|0|FILLED|1|2026-10-20 15:00:01+00|2026-10-20 15:00:03+00"
+expect "bob's orders" "SELECT order_id FROM orders WHERE user_id = 'bob' ORDER BY sequence DESC" "ord-3"
+expect "counterparties" "$COUNTERPARTIES_Q" \
+	"exe-1|1|AAPL|19000|5|ord-3|bob|FILLED|10|0|ord-1|alice|FILLED|5|0
+exe-2|2|AAPL|19100|5|ord-3|bob|FILLED|10|0|ord-2|alice|PARTIALLY_FILLED|8|3"
+expect "accounts" "$ACCOUNTS_Q" "alice|Alice (demo)|10190500|0|10190500
+bob|Bob (demo)|9809500|0|9809500"
+expect "positions" "$POSITIONS_Q" "alice|AAPL|90|3|87
+alice|MSFT|100|0|100
+bob|AAPL|110|0|110
+bob|MSFT|100|0|100"
+expect "AAPL asks" "$ASKS_Q" "19100|3|1"
+expect "asOfSequence" "$AS_OF_Q" 3
+validations_pass "Example 4"
+
+# The validation queries are not vacuous: each catches a broken invariant.
+detects V1 "UPDATE executions SET quantity = 4 WHERE execution_id = 'exe-1'"
+detects V2 "UPDATE executions SET buy_order_id = 'ord-2', buyer_user_id = 'alice', sell_order_id = 'ord-1' WHERE execution_id = 'exe-1'"
+detects V3 "UPDATE executions SET price = 19050 WHERE execution_id = 'exe-1'"
+detects V4 "UPDATE executions SET executed_at = '2026-10-20T15:00:00Z' WHERE execution_id = 'exe-1'"
+# V5: a later order's execution is recorded before ord-3's executions.
+detects V5 "UPDATE executions SET sequence = sequence + 10;
+	INSERT INTO orders ($ORDER_COLS) VALUES ('ord-4', 4, 'bob', 'AAPL', 'BUY', 'LIMIT', 19100, 1, 0, 'FILLED', $T3, $T3);
+	INSERT INTO executions ($EXEC_COLS) VALUES ('exe-3', 5, $T3, 'AAPL', 19100, 1, 'ord-4', 'ord-2', 'bob', 'alice')"
+detects V6 "UPDATE positions SET reserved = 4 WHERE user_id = 'alice' AND symbol = 'AAPL'"
+detects V7 "UPDATE accounts SET cash_total = cash_total + 1 WHERE user_id = 'bob'"
+pass "ordered execution history by sequence despite tied timestamps; V1 to V8 pass and V1 to V7 catch corruption"
+
+# ---------------------------------------------------------------------------
+# Example 5: same-account trade. Allowed, listed once for that account, and
+# settlement nets to the seed balances.
+
+seeded_db
+psql_db >/dev/null <<SQL || fail "loading Example 5"
+INSERT INTO orders ($ORDER_COLS) VALUES
+	('ord-1', 1, 'alice', 'MSFT', 'SELL', 'LIMIT', 40000, 4, 0, 'FILLED', '2026-10-20T15:00:01Z', '2026-10-20T15:00:02Z'),
+	('ord-2', 2, 'alice', 'MSFT', 'BUY', 'LIMIT', 40100, 4, 0, 'FILLED', '2026-10-20T15:00:02Z', '2026-10-20T15:00:02Z');
+INSERT INTO executions ($EXEC_COLS) VALUES
+	('exe-1', 1, '2026-10-20T15:00:02Z', 'MSFT', 40000, 4, 'ord-2', 'ord-1', 'alice', 'alice');
+SQL
+expect "same-account execution for alice" "$(execution_history MSFT "'alice'")" \
+	"exe-1|1|2026-10-20 15:00:02+00|MSFT|40000|4|ord-2|ord-1|alice|alice"
+expect "same-account execution for bob" "$(execution_history MSFT "'bob'")" ""
+expect "balances after same-account trade" "$ACCOUNTS_Q" "$SEED_ACCOUNTS"
+expect "positions after same-account trade" "$POSITIONS_Q" "$SEED_POSITIONS"
+validations_pass "Example 5"
+pass "same-account trade is stored, listed once, and nets to the seed balances"
+
+echo "all schema and seed tests passed"

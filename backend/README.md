@@ -120,7 +120,10 @@ backend/
   db/
     migrate           Applies and reports versioned SQL migrations
     migrations/       Migration files, NNNN_description.sql
+    seed              Loads the demo seed data into a migrated database
+    seeds/            Seed files, NNNN_description.sql
     test-migrate      Self-test for the migration tool
+    test-schema       Tests for the trading schema and demo seeds
   cmd/
     server/
       main.go         Configuration and HTTP server startup and shutdown

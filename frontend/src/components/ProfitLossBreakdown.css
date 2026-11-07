@@ -1,0 +1,90 @@
+.pnl {
+  --surface: #111827;
+  --border: #334155;
+  --text: #f8fafc;
+  --text-secondary: #cbd5e1;
+  --text-muted: #94a3b8;
+  --gain: #22c55e;
+  --loss: #ef4444;
+
+  box-sizing: border-box;
+  width: 100%;
+  /* Inside a grid or flex parent, let the table scroll instead of widening the page. */
+  min-width: 0;
+  padding: 24px;
+  background-color: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  color: var(--text);
+}
+
+.pnl-title {
+  margin: 0 0 16px;
+  font-size: 16px;
+  font-weight: 600;
+}
+
+.pnl p {
+  margin: 0 0 16px;
+  font-size: 14px;
+  color: var(--text-secondary);
+}
+
+/* The live region stays in the document so its message is announced, and takes
+   no space while it is empty. */
+.pnl p.pnl-status:empty {
+  margin: 0;
+}
+
+.pnl-rows {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(200px, 1fr));
+  gap: 16px;
+  margin: 0;
+}
+
+.pnl-row {
+  min-width: 0;
+}
+
+.pnl-label {
+  color: var(--text-muted);
+  font-size: 12px;
+  font-weight: 600;
+}
+
+.pnl-value {
+  margin: 4px 0 0;
+  overflow-wrap: anywhere;
+  font-size: 20px;
+  font-variant-numeric: tabular-nums;
+  font-weight: 600;
+}
+
+.pnl-value-pending {
+  color: var(--text-muted);
+  font-size: 14px;
+  font-weight: 400;
+}
+
+/* Green and red are reserved for gains and losses in the visual system. The
+   signed amount and the word beside it carry the same meaning without color. */
+.pnl-value[data-direction='gain'] .pnl-amount {
+  color: var(--gain);
+}
+
+.pnl-value[data-direction='loss'] .pnl-amount {
+  color: var(--loss);
+}
+
+.pnl-direction {
+  color: var(--text-secondary);
+  font-size: 12px;
+  font-weight: 400;
+}
+
+.pnl-helper {
+  margin: 4px 0 0;
+  color: var(--text-muted);
+  font-size: 12px;
+}

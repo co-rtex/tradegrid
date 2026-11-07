@@ -46,6 +46,8 @@ Represents completed trades produced by the matching engine.
 ### Portfolio
 Tracks cash, positions, cost basis, and basic P&L.
 
+See [Portfolio Accounting Contract](portfolio.md) for average-cost basis, realized and unrealized P&L, reference prices, and the portfolio endpoint.
+
 ### Market Data
 Publishes order-book and execution updates to clients.
 

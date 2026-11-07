@@ -1,0 +1,115 @@
+.order-book {
+  --surface: #111827;
+  --elevated: #1f2937;
+  --border: #334155;
+  --text: #f8fafc;
+  --text-secondary: #cbd5e1;
+  --text-muted: #94a3b8;
+  --accent-hover: #67e8f9;
+  --buy: #22c55e;
+  --sell: #ef4444;
+
+  box-sizing: border-box;
+  width: 100%;
+  /* Inside a grid or flex parent, let the tables scroll instead of widening the page. */
+  min-width: 0;
+  padding: 24px;
+  background-color: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  color: var(--text);
+}
+
+.order-book-title {
+  margin: 0 0 16px;
+  font-size: 16px;
+  font-weight: 600;
+}
+
+.order-book p {
+  margin: 0;
+  font-size: 14px;
+  color: var(--text-secondary);
+}
+
+.order-book > .order-book-note {
+  margin-bottom: 16px;
+  font-size: 12px;
+  color: var(--text-muted);
+}
+
+/* Bids and asks sit side by side when there is room and stack when there is not. */
+.order-book-sides {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(min(100%, 280px), 1fr));
+  gap: 24px;
+}
+
+.order-book-side {
+  min-width: 0;
+}
+
+.order-book-side-title {
+  margin: 0 0 8px;
+  font-size: 14px;
+  font-weight: 600;
+  color: var(--text-secondary);
+}
+
+.order-book-scroll {
+  position: relative;
+  overflow-x: auto;
+}
+
+.order-book-scroll:focus-visible {
+  outline: 2px solid var(--accent-hover);
+  outline-offset: 2px;
+}
+
+.order-book-table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 14px;
+  font-variant-numeric: tabular-nums;
+  text-align: right;
+}
+
+.order-book-table th,
+.order-book-table td {
+  padding: 12px;
+  border-bottom: 1px solid var(--border);
+  white-space: nowrap;
+}
+
+.order-book-table thead th {
+  padding: 8px 12px;
+  color: var(--text-muted);
+  font-weight: 600;
+}
+
+.order-book-table th:first-child {
+  text-align: left;
+}
+
+.order-book-table tbody tr:last-child th,
+.order-book-table tbody tr:last-child td {
+  border-bottom: none;
+}
+
+.order-book-table tbody tr:hover {
+  background-color: var(--elevated);
+}
+
+/* Green and red are reserved for buy and sell in the visual system. The level
+   label and the side heading always say "bid"/"buy" or "ask"/"sell" as well. */
+.order-book-level {
+  font-weight: 600;
+}
+
+.order-book-side[data-side='bid'] .order-book-level {
+  color: var(--buy);
+}
+
+.order-book-side[data-side='ask'] .order-book-level {
+  color: var(--sell);
+}

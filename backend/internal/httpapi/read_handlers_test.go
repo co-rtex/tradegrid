@@ -2,6 +2,7 @@ package httpapi
 
 import (
 	"encoding/json"
+	"errors"
 	"fmt"
 	"net/http"
 	"net/http/httptest"
@@ -71,6 +72,15 @@ type fixture struct {
 	Setup   []fixtureRequest           `json:"setup"`
 	Request *fixtureRequest            `json:"request"`
 	After   map[string]json.RawMessage `json:"after"`
+	// Response is the expected outcome of Request: 201, or an error code.
+	Response struct {
+		Status int `json:"status"`
+		Body   struct {
+			Error struct {
+				Code string `json:"code"`
+			} `json:"error"`
+		} `json:"body"`
+	} `json:"response"`
 }
 
 type fixtureRequest struct {
@@ -120,9 +130,19 @@ func TestReadFixtures(t *testing.T) {
 				}
 			}
 			if fx.Request != nil {
-				// Only the outcome on the read side matters here; #36 checks
-				// the POST response itself.
-				_ = fx.Request.submit(svc)
+				// #36 checks the POST response body; here only acceptance or
+				// the rejection code must match, so the reads below start
+				// from the state the fixture describes.
+				err := fx.Request.submit(svc)
+				var e *exchange.Error
+				switch want := fx.Response.Body.Error.Code; {
+				case fx.Response.Status == http.StatusCreated && err != nil:
+					t.Fatalf("request rejected: %v", err)
+				case fx.Response.Status != http.StatusCreated && !errors.As(err, &e):
+					t.Fatalf("request accepted (err %v), want %d %s", err, fx.Response.Status, want)
+				case e != nil && string(e.Code) != want:
+					t.Fatalf("request rejected with %s, want %s", e.Code, want)
+				}
 			}
 			if len(fx.After) == 0 {
 				t.Fatal("fixture lists no reads")
@@ -304,6 +324,9 @@ func TestReadErrors(t *testing.T) {
 		// When several rules fail, docs/api.md's order decides: missing
 		// parameters and bounds (400), then the user (404), then the symbol (422).
 		{"/api/v1/orders?userId=carol&limit=abc", 400, "INVALID_QUERY", "limit"},
+		{"/api/v1/orders?limit=abc", 400, "INVALID_QUERY", "userId"},
+		{"/api/v1/orderbook?depth=0", 400, "INVALID_QUERY", "symbol"},
+		{"/api/v1/executions?userId=carol&limit=abc", 400, "INVALID_QUERY", "symbol"},
 		{"/api/v1/orders?userId=carol&limit=500", 400, "INVALID_QUERY", "limit"},
 		{"/api/v1/orderbook?symbol=GOOG&depth=500", 400, "INVALID_QUERY", "depth"},
 		{"/api/v1/executions?userId=carol", 400, "INVALID_QUERY", "symbol"},

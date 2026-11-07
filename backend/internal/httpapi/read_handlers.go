@@ -48,7 +48,7 @@ func handleAccounts(svc *exchange.Service) http.HandlerFunc {
 // GET /api/v1/orders?userId=...&limit=...
 func handleOrders(svc *exchange.Service) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
-		q, limit, err := query(r, "limit")
+		q, limit, err := query(r, "userId", "limit")
 		if err != nil {
 			writeError(w, err)
 			return
@@ -65,7 +65,7 @@ func handleOrders(svc *exchange.Service) http.HandlerFunc {
 // GET /api/v1/orderbook?symbol=...&depth=...
 func handleOrderBook(svc *exchange.Service) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
-		q, depth, err := query(r, "depth")
+		q, depth, err := query(r, "symbol", "depth")
 		if err != nil {
 			writeError(w, err)
 			return
@@ -82,7 +82,7 @@ func handleOrderBook(svc *exchange.Service) http.HandlerFunc {
 // GET /api/v1/executions?symbol=...&userId=...&limit=...
 func handleExecutions(svc *exchange.Service) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
-		q, limit, err := query(r, "limit")
+		q, limit, err := query(r, "symbol", "limit")
 		if err != nil {
 			writeError(w, err)
 			return
@@ -96,16 +96,27 @@ func handleExecutions(svc *exchange.Service) http.HandlerFunc {
 	}
 }
 
-// query parses the request's query string strictly and reads the optional
-// integer parameter intName with intQuery. r.URL.Query would silently drop a
-// pair it cannot decode, so "limit=%zz" would become the default limit; here
-// it is INVALID_QUERY. The service then checks, in docs/api.md order,
-// required parameters and bounds (400), the user (404), and the symbol (422).
-func query(r *http.Request, intName string) (url.Values, int, error) {
+// query parses the request's query string strictly, checks that the required
+// parameter is present, and then reads the optional integer parameter
+// intName with intQuery. r.URL.Query would silently drop a pair it cannot
+// decode, so "limit=%zz" would become the default limit; here it is
+// INVALID_QUERY.
+//
+// Together with the service this gives docs/api.md's error order: a
+// malformed query, then a missing required parameter, then a bad limit or
+// depth (all 400), then the user (404), then the symbol (422). The required
+// check is repeated here, ahead of intQuery, so "?limit=abc" without a
+// userId reports userId rather than limit; the service keeps its own check
+// for callers other than HTTP.
+func query(r *http.Request, required, intName string) (url.Values, int, error) {
 	q, err := url.ParseQuery(r.URL.RawQuery)
 	if err != nil {
 		return nil, 0, &exchange.Error{Code: exchange.CodeInvalidQuery,
 			Err: fmt.Errorf("malformed query string: %w", err)}
+	}
+	if q.Get(required) == "" {
+		return nil, 0, &exchange.Error{Code: exchange.CodeInvalidQuery, Field: required,
+			Err: fmt.Errorf("%s is required", required)}
 	}
 	n, err := intQuery(q, intName)
 	return q, n, err

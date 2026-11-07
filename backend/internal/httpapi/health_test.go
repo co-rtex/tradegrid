@@ -7,15 +7,17 @@ import (
 	"net/http/httptest"
 	"reflect"
 	"testing"
+
+	"github.com/co-rtex/tradegrid/backend/internal/exchange"
 )
 
 // newTestServer serves the real router on a random loopback port, so these
 // tests go through the same routing, method matching, and HTTP encoding as
-// the running backend. NewRouter takes no dependencies: no database, seeded
-// accounts, or exchange is needed for any of these tests.
+// the running backend. Each server gets a fresh in-memory exchange, so tests
+// never share state and no database is needed.
 func newTestServer(t *testing.T) *httptest.Server {
 	t.Helper()
-	srv := httptest.NewServer(NewRouter())
+	srv := httptest.NewServer(NewRouter(exchange.New(exchange.Config{})))
 	t.Cleanup(srv.Close)
 	return srv
 }

@@ -63,8 +63,10 @@ See [Sprint 2 API and Exchange Contract](api.md) for the REST endpoints, JSON sh
 ## Current Integration Status
 
 The matching, order, risk, account, execution, and in-memory exchange packages
-are implemented and tested independently. The running backend currently serves
-only `GET /health`; the Sprint 2 REST trading routes are not wired into it yet.
+are implemented and tested independently. The running backend serves
+`GET /health` and the Sprint 2 read routes (`/api/v1/symbols`, `/accounts`,
+`/orders`, `/orderbook`, and `/executions`) over one in-memory exchange; order
+submission (`POST /api/v1/orders`) is not wired in yet.
 The frontend is currently an application shell and does not connect to the
 backend. The [Developer Setup and Demo Guide](demo.md) separates current
 startup steps from fixture-defined trading behavior and lists the remaining

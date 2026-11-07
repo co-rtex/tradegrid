@@ -294,6 +294,23 @@ func TestReadErrors(t *testing.T) {
 		{"/api/v1/executions?symbol=msft", 422, "UNKNOWN_SYMBOL", "symbol"},
 		{"/api/v1/executions?symbol=AAPL&userId=carol", 404, "UNKNOWN_USER", "userId"},
 		{"/api/v1/executions?symbol=AAPL&limit=500", 400, "INVALID_QUERY", "limit"},
+
+		// A query string that cannot be decoded is INVALID_QUERY, not ignored.
+		// No single parameter is at fault, so field is omitted.
+		{"/api/v1/orders?userId=alice&limit=%zz", 400, "INVALID_QUERY", ""},
+		{"/api/v1/orderbook?symbol=AAPL&depth=%zz", 400, "INVALID_QUERY", ""},
+		{"/api/v1/executions?symbol=AAPL&%zz", 400, "INVALID_QUERY", ""},
+
+		// When several rules fail, docs/api.md's order decides: missing
+		// parameters and bounds (400), then the user (404), then the symbol (422).
+		{"/api/v1/orders?userId=carol&limit=abc", 400, "INVALID_QUERY", "limit"},
+		{"/api/v1/orders?userId=carol&limit=500", 400, "INVALID_QUERY", "limit"},
+		{"/api/v1/orderbook?symbol=GOOG&depth=500", 400, "INVALID_QUERY", "depth"},
+		{"/api/v1/executions?userId=carol", 400, "INVALID_QUERY", "symbol"},
+		{"/api/v1/executions?symbol=GOOG&limit=500", 400, "INVALID_QUERY", "limit"},
+		{"/api/v1/executions?symbol=GOOG&userId=carol&limit=500", 400, "INVALID_QUERY", "limit"},
+		{"/api/v1/executions?symbol=GOOG&userId=carol", 404, "UNKNOWN_USER", "userId"},
+		{"/api/v1/executions?symbol=GOOG&userId=bob", 422, "UNKNOWN_SYMBOL", "symbol"},
 	}
 	for _, tt := range tests {
 		t.Run(tt.path, func(t *testing.T) {
@@ -301,27 +318,84 @@ func TestReadErrors(t *testing.T) {
 			if status != tt.status {
 				t.Errorf("status = %d, want %d; body %v", status, tt.status, got)
 			}
-			e, _ := got.(map[string]any)["error"].(map[string]any)
-			if e["code"] != tt.code || e["field"] != tt.field {
-				t.Errorf("error = %v, want code %s field %s", e, tt.code, tt.field)
-			}
-			if msg, _ := e["message"].(string); msg == "" {
-				t.Errorf("error has no message: %v", e)
+			checkError(t, got, tt.code, tt.field)
+		})
+	}
+}
+
+// checkError checks that body is the contracted error object with the given
+// code and field ("" means field is absent) and a non-empty message.
+func checkError(t *testing.T, body any, code, field string) {
+	t.Helper()
+	e, _ := body.(map[string]any)["error"].(map[string]any)
+	gotField, hasField := e["field"]
+	if e["code"] != code || (field == "" && hasField) || (field != "" && gotField != field) {
+		t.Errorf("error = %v, want code %s field %q", e, code, field)
+	}
+	if msg, _ := e["message"].(string); msg == "" {
+		t.Errorf("error has no message: %v", e)
+	}
+}
+
+// Unsupported methods on read routes get METHOD_NOT_ALLOWED as JSON, with
+// the same Allow header ServeMux would send; HEAD is served like GET.
+func TestReadRoutesAreGetOnly(t *testing.T) {
+	srv := newExchangeServer(t, exchange.New(exchange.Config{}))
+
+	paths := []string{
+		"/api/v1/symbols", "/api/v1/accounts", "/api/v1/orders",
+		"/api/v1/orderbook", "/api/v1/executions",
+	}
+	for _, path := range paths {
+		for _, method := range []string{http.MethodPost, http.MethodPut, http.MethodDelete, http.MethodPatch} {
+			t.Run(method+" "+path, func(t *testing.T) {
+				resp, body := do(t, method, srv.URL+path)
+				if resp.StatusCode != http.StatusMethodNotAllowed {
+					t.Errorf("status %d, want 405", resp.StatusCode)
+				}
+				if got := resp.Header.Get("Allow"); got != "GET, HEAD" {
+					t.Errorf("Allow = %q, want %q", got, "GET, HEAD")
+				}
+				if got := resp.Header.Get("Content-Type"); got != jsonContentType {
+					t.Errorf("Content-Type = %q, want %q", got, jsonContentType)
+				}
+				var v any
+				if err := json.Unmarshal(body, &v); err != nil {
+					t.Fatalf("body %q is not JSON: %v", body, err)
+				}
+				checkError(t, v, "METHOD_NOT_ALLOWED", "")
+			})
+		}
+		t.Run("HEAD "+path, func(t *testing.T) {
+			resp, body := do(t, http.MethodHead, srv.URL+path+"?userId=alice&symbol=AAPL")
+			if resp.StatusCode != http.StatusOK || len(body) != 0 {
+				t.Errorf("status %d with %d body bytes, want 200 and no body", resp.StatusCode, len(body))
 			}
 		})
 	}
 }
 
-func TestReadRoutesAreGetOnly(t *testing.T) {
+// Unknown paths under /api/ get NOT_FOUND as JSON for every method. Paths
+// outside /api/ keep ServeMux's plain-text 404 (TestUnknownPathIsNotFound).
+func TestUnknownAPIPathIsJSONNotFound(t *testing.T) {
 	srv := newExchangeServer(t, exchange.New(exchange.Config{}))
 
-	for _, path := range []string{"/api/v1/symbols", "/api/v1/accounts", "/api/v1/orderbook", "/api/v1/executions"} {
-		resp, _ := do(t, http.MethodPost, srv.URL+path)
-		if resp.StatusCode != http.StatusMethodNotAllowed {
-			t.Errorf("POST %s: status %d, want 405", path, resp.StatusCode)
-		}
-		if got := resp.Header.Get("Allow"); got != "GET, HEAD" {
-			t.Errorf("POST %s: Allow = %q, want %q", path, got, "GET, HEAD")
+	for _, path := range []string{
+		"/api", "/api/", "/api/v1", "/api/v1/", "/api/v1/nope",
+		"/api/v1/symbols/", "/api/v1/orderbook/AAPL", "/api/v2/symbols",
+	} {
+		for _, method := range []string{http.MethodGet, http.MethodPost} {
+			t.Run(method+" "+path, func(t *testing.T) {
+				resp, body := do(t, method, srv.URL+path)
+				if resp.StatusCode != http.StatusNotFound {
+					t.Errorf("status %d, want 404; body %q", resp.StatusCode, body)
+				}
+				var v any
+				if err := json.Unmarshal(body, &v); err != nil {
+					t.Fatalf("body %q is not JSON: %v", body, err)
+				}
+				checkError(t, v, "NOT_FOUND", "")
+			})
 		}
 	}
 }

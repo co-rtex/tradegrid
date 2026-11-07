@@ -8,6 +8,13 @@ import (
 	"github.com/co-rtex/tradegrid/backend/internal/exchange"
 )
 
+// Routing codes from docs/api.md. The exchange never returns these; the HTTP
+// layer decides them before any service call.
+const (
+	codeNotFound         exchange.Code = "NOT_FOUND"
+	codeMethodNotAllowed exchange.Code = "METHOD_NOT_ALLOWED"
+)
+
 // errorResponse is the body of every error response (docs/api.md, "Errors").
 type errorResponse struct {
 	Error errorBody `json:"error"`
@@ -48,10 +55,13 @@ func writeError(w http.ResponseWriter, err error) {
 	status, ok := codeStatus[e.Code]
 	if !ok || status == http.StatusInternalServerError {
 		log.Printf("httpapi: internal error: %v", err)
-		writeJSON(w, http.StatusInternalServerError, errorResponse{Error: errorBody{
-			Code: exchange.CodeInternal, Message: "internal error",
-		}})
+		writeErrorBody(w, http.StatusInternalServerError, exchange.CodeInternal, "internal error", "")
 		return
 	}
-	writeJSON(w, status, errorResponse{Error: errorBody{Code: e.Code, Message: e.Err.Error(), Field: e.Field}})
+	writeErrorBody(w, status, e.Code, e.Err.Error(), e.Field)
+}
+
+// writeErrorBody writes one error response. An empty field is omitted.
+func writeErrorBody(w http.ResponseWriter, status int, code exchange.Code, message, field string) {
+	writeJSON(w, status, errorResponse{Error: errorBody{Code: code, Message: message, Field: field}})
 }

@@ -101,8 +101,10 @@ curl -i "http://127.0.0.1:8080/api/v1/executions?symbol=AAPL&userId=bob"
 
 The handlers are in `internal/httpapi/read_handlers.go`. Invalid queries get
 the contract's JSON error body, for example `400 INVALID_QUERY` for a missing
-`symbol` and `404 UNKNOWN_USER` for an unknown `userId`. Restarting the server
-resets the exchange to the seeded state.
+`symbol` and `404 UNKNOWN_USER` for an unknown `userId`. Under `/api/`, an
+unknown path gets `404 NOT_FOUND` and an unsupported method gets
+`405 METHOD_NOT_ALLOWED` with an `Allow` header, both as JSON. Restarting the
+server resets the exchange to the seeded state.
 
 ### Stop the server
 
@@ -156,7 +158,11 @@ Keep `cmd/server/main.go` focused on starting the application: reading
 configuration, opening the listener, and stopping cleanly. Routes belong in
 `internal/httpapi`. `NewRouter` in `router.go` registers each route with a
 method and path, such as `mux.HandleFunc("GET /health", handleHealth)`, and
-each group of handlers lives in its own file. Create packages
+each group of handlers lives in its own file. Register every `/api/` path with
+`handleAPI` instead, for example
+`handleAPI(mux, "/api/v1/symbols", methods{http.MethodGet: handleSymbols})`,
+so its unsupported methods get the JSON `405` rather than the `/api/`
+catch-all's `404`. Create packages
 under `backend/internal/` as backend functionality is added; Go keeps packages
 in that directory private to this backend module.
 

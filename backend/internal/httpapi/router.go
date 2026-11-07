@@ -32,10 +32,14 @@ func NewRouter(svc *exchange.Service) http.Handler {
 	mux := http.NewServeMux()
 	mux.HandleFunc("GET /health", handleHealth)
 
-	// Read endpoints (#37), in read_handlers.go.
+	// Read endpoints (#37) are in read_handlers.go; order submission (#36)
+	// is in order_handlers.go.
 	handleAPI(mux, "/api/v1/symbols", methods{http.MethodGet: handleSymbols})
 	handleAPI(mux, "/api/v1/accounts", methods{http.MethodGet: handleAccounts(svc)})
-	handleAPI(mux, "/api/v1/orders", methods{http.MethodGet: handleOrders(svc)})
+	handleAPI(mux, "/api/v1/orders", methods{
+		http.MethodGet:  handleOrders(svc),
+		http.MethodPost: handleSubmitOrder(svc),
+	})
 	handleAPI(mux, "/api/v1/orderbook", methods{http.MethodGet: handleOrderBook(svc)})
 	handleAPI(mux, "/api/v1/executions", methods{http.MethodGet: handleExecutions(svc)})
 

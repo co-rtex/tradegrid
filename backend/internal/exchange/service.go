@@ -1,14 +1,14 @@
-// Package exchange joins the order model, matching engine, and execution
-// mapper behind one serialized service. It owns the book, the canonical
-// orders, and the execution history; nothing else changes them.
+// Package exchange joins the order model, matching engine, execution mapper,
+// and accounts ledger behind one serialized service. It owns the book, the
+// canonical orders, the execution history, and the demo accounts; nothing
+// else changes them.
 //
 // Every submission is built on a candidate copy and published only after
 // every step succeeds, so a failure at any point leaves the published state
 // exactly as it was. One mutex covers submissions and reads, so the order in
 // which submissions take the lock is their acceptance order.
 //
-// The service is internal: HTTP (#36, #37) calls it, and #35 adds accounts at
-// the join marked in candidate.
+// The service is internal: HTTP (#36, #37) calls it.
 package exchange
 
 import (
@@ -19,10 +19,12 @@ import (
 	"sync"
 	"time"
 
+	"github.com/co-rtex/tradegrid/backend/internal/accounts"
 	"github.com/co-rtex/tradegrid/backend/internal/executions"
 	"github.com/co-rtex/tradegrid/backend/internal/instruments"
 	"github.com/co-rtex/tradegrid/backend/internal/matching"
 	"github.com/co-rtex/tradegrid/backend/internal/orders"
+	"github.com/co-rtex/tradegrid/backend/internal/risk"
 )
 
 // Read limits from docs/api.md. A zero limit or depth means the default.
@@ -92,11 +94,12 @@ type Service struct {
 	book     *matching.Book
 	orders   map[string]Order
 	history  []executions.Record
+	ledger   *accounts.Ledger
 	orderSeq int64
 	execSeq  int64
 }
 
-// New returns an empty exchange.
+// New returns an exchange with no orders and the seeded demo accounts.
 func New(cfg Config) *Service {
 	if cfg.Now == nil {
 		cfg.Now = time.Now
@@ -107,32 +110,69 @@ func New(cfg Config) *Service {
 	if cfg.ExecutionID == nil {
 		cfg.ExecutionID = func(seq int64) string { return fmt.Sprintf("exe-%d", seq) }
 	}
-	return &Service{cfg: cfg, book: matching.NewBook(), orders: make(map[string]Order)}
+	return &Service{cfg: cfg, book: matching.NewBook(), orders: make(map[string]Order), ledger: accounts.Seed()}
 }
 
 // candidate is the state one submission builds before it is published.
-//
-// #35 joins here: it adds a cloned accounts.Ledger, calls Reserve in reserve
-// and Settle in settle, and publishes the ledger with the rest.
 type candidate struct {
+	ledger  *accounts.Ledger
 	book    *matching.Book
 	changed map[string]Order // incoming and every resting order it filled
 	records []executions.Record
 }
 
-func (c *candidate) reserve(orders.Order) error { return nil }
+// reserve checks that the account can afford o and records its reservation
+// on the candidate ledger.
+func (c *candidate) reserve(o orders.Order) error {
+	if err := c.ledger.Reserve(o); err != nil {
+		return ledgerError(err)
+	}
+	return nil
+}
 
-func (c *candidate) settle() error { return nil }
+// settle applies the candidate's execution records to the candidate ledger,
+// using the filled canonical orders.
+func (c *candidate) settle() error {
+	canonical := make(map[string]orders.Order, len(c.changed))
+	for id, o := range c.changed {
+		canonical[id] = o.Order
+	}
+	if err := c.ledger.Settle(c.records, canonical); err != nil {
+		return ledgerError(err)
+	}
+	return nil
+}
 
-// Submit accepts one LIMIT order, matches it, and publishes the new book,
-// orders, and executions together. A rejected request returns an *Error with
-// a request code and publishes nothing; any later failure returns CodeInternal
-// and also publishes nothing.
+// ledgerError maps ledger and risk errors to API codes. Anything that is not
+// a client-visible risk outcome is a bug and maps to INTERNAL.
+func ledgerError(err error) *Error {
+	switch {
+	case errors.Is(err, accounts.ErrUnknownUser):
+		return newError(CodeUnknownUser, "userId", err)
+	case errors.Is(err, risk.ErrInsufficientCash):
+		return newError(CodeInsufficientCash, "", err)
+	case errors.Is(err, risk.ErrInsufficientShares):
+		return newError(CodeInsufficientShares, "", err)
+	case errors.Is(err, risk.ErrLimitExceeded):
+		return newError(CodeLimitExceeded, "", err)
+	}
+	return internal(err)
+}
+
+// Submit accepts one LIMIT order, reserves its cash or shares, matches it,
+// settles the fills, and publishes the new book, orders, executions, and
+// accounts together. A rejected request returns an *Error with a request or
+// risk code and publishes nothing; any later failure returns CodeInternal and
+// also publishes nothing.
 func (s *Service) Submit(req SubmitRequest) (SubmitResult, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
 	// Reject invalid input before allocating a sequence or touching the book.
+	// An unknown user is reported before field errors (docs/api.md).
+	if req.UserID != "" && !s.ledger.Has(req.UserID) {
+		return SubmitResult{}, newError(CodeUnknownUser, "userId", fmt.Errorf("unknown user %q", req.UserID))
+	}
 	side, err := checkRequest(req)
 	if err != nil {
 		return SubmitResult{}, err
@@ -150,7 +190,7 @@ func (s *Service) Submit(req SubmitRequest) (SubmitResult, error) {
 		return SubmitResult{}, internal(fmt.Errorf("duplicate order id %q", o.ID))
 	}
 
-	c := &candidate{changed: map[string]Order{o.ID: {Order: o, Sequence: seq}}}
+	c := &candidate{ledger: s.ledger.Clone(), changed: map[string]Order{o.ID: {Order: o, Sequence: seq}}}
 	if err := c.reserve(o); err != nil {
 		return SubmitResult{}, err
 	}
@@ -200,6 +240,7 @@ func (s *Service) Submit(req SubmitRequest) (SubmitResult, error) {
 	}
 
 	// Publish. Nothing below can fail.
+	s.ledger = c.ledger
 	s.book = c.book
 	for id, ord := range c.changed {
 		s.orders[id] = ord
@@ -266,6 +307,9 @@ func (s *Service) Orders(userID string, limit int) ([]Order, error) {
 	if userID == "" {
 		return nil, newError(CodeInvalidQuery, "userId", errors.New("userId is required"))
 	}
+	if !s.hasUser(userID) {
+		return nil, newError(CodeUnknownUser, "userId", fmt.Errorf("unknown user %q", userID))
+	}
 	limit, err := bound(limit, DefaultLimit, MaxLimit, "limit")
 	if err != nil {
 		return nil, err
@@ -291,6 +335,9 @@ func (s *Service) Executions(symbol, userID string, limit int) ([]executions.Rec
 	}
 	if !instruments.Supported(symbol) {
 		return nil, newError(CodeUnknownSymbol, "symbol", fmt.Errorf("unsupported symbol %q", symbol))
+	}
+	if userID != "" && !s.hasUser(userID) {
+		return nil, newError(CodeUnknownUser, "userId", fmt.Errorf("unknown user %q", userID))
 	}
 	limit, err := bound(limit, DefaultLimit, MaxLimit, "limit")
 	if err != nil {
@@ -331,6 +378,20 @@ func (s *Service) OrderBook(symbol string, depth int) (BookSnapshot, error) {
 		Bids:         levels(s.book.Bids(symbol), depth),
 		Asks:         levels(s.book.Asks(symbol), depth),
 	}, nil
+}
+
+// Accounts returns every demo account's cash and positions, sorted by user
+// ID. The result is a copy.
+func (s *Service) Accounts() []accounts.Snapshot {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.ledger.Snapshot()
+}
+
+func (s *Service) hasUser(userID string) bool {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.ledger.Has(userID)
 }
 
 // levels aggregates entries that are already sorted best price first.

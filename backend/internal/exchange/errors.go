@@ -6,8 +6,7 @@ import "fmt"
 // to its status without matching message text.
 type Code string
 
-// Codes the service can return. #35 adds account and funds codes; the full
-// list lives in docs/api.md.
+// Codes the service can return; the full list lives in docs/api.md.
 const (
 	CodeMissingField         Code = "MISSING_FIELD"
 	CodeUnknownSymbol        Code = "UNKNOWN_SYMBOL"
@@ -16,6 +15,10 @@ const (
 	CodeInvalidPrice         Code = "INVALID_PRICE"
 	CodeInvalidQuantity      Code = "INVALID_QUANTITY"
 	CodeInvalidQuery         Code = "INVALID_QUERY"
+	CodeUnknownUser          Code = "UNKNOWN_USER"
+	CodeInsufficientCash     Code = "INSUFFICIENT_CASH"
+	CodeInsufficientShares   Code = "INSUFFICIENT_SHARES"
+	CodeLimitExceeded        Code = "LIMIT_EXCEEDED"
 	CodeInternal             Code = "INTERNAL"
 )
 

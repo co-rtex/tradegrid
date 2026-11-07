@@ -44,8 +44,12 @@ jobs:
         run: backend/db/migrate status
       - name: Apply migrations
         run: backend/db/migrate up
+      - name: Seed demo data
+        run: backend/db/seed
       - name: Test the migration tool
         run: backend/db/test-migrate
+      - name: Test the schema and seeds
+        run: backend/db/test-schema
 
   frontend:
     runs-on: ubuntu-latest

@@ -392,6 +392,36 @@ func (s *Service) Accounts() []accounts.Snapshot {
 	return s.ledger.Snapshot()
 }
 
+// Portfolio is one account's cash, share balances, and cost-basis lots, as
+// of the last committed submission. Valuation and the portfolio endpoint
+// (#65, #69) build GET /api/v1/portfolio from it.
+type Portfolio struct {
+	// AsOfSequence is the acceptance sequence of the last committed
+	// submission included, as in BookSnapshot. 0 before any order.
+	AsOfSequence int64
+	accounts.PortfolioSnapshot
+}
+
+// Portfolio returns one account's portfolio view, taken under the same lock
+// as submissions so balances and cost basis always come from one committed
+// state. A missing userId is INVALID_QUERY and an unknown one UNKNOWN_USER,
+// in that order. The result is a copy.
+func (s *Service) Portfolio(userID string) (Portfolio, error) {
+	if userID == "" {
+		return Portfolio{}, newError(CodeInvalidQuery, "userId", errors.New("userId is required"))
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	snap, err := s.ledger.Portfolio(userID)
+	if err != nil {
+		if errors.Is(err, accounts.ErrUnknownUser) {
+			return Portfolio{}, newError(CodeUnknownUser, "userId", err)
+		}
+		return Portfolio{}, internal(err)
+	}
+	return Portfolio{AsOfSequence: s.orderSeq, PortfolioSnapshot: snap}, nil
+}
+
 func (s *Service) hasUser(userID string) bool {
 	s.mu.Lock()
 	defer s.mu.Unlock()

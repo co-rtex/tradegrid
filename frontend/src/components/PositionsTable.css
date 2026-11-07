@@ -1,0 +1,114 @@
+.positions {
+  --surface: #111827;
+  --elevated: #1f2937;
+  --border: #334155;
+  --text: #f8fafc;
+  --text-secondary: #cbd5e1;
+  --text-muted: #94a3b8;
+  --accent-hover: #67e8f9;
+  --gain: #22c55e;
+  --loss: #ef4444;
+
+  box-sizing: border-box;
+  width: 100%;
+  /* Inside a grid or flex parent, let the table scroll instead of widening the page. */
+  min-width: 0;
+  padding: 24px;
+  background-color: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  color: var(--text);
+}
+
+.positions-title {
+  margin: 0 0 16px;
+  font-size: 16px;
+  font-weight: 600;
+}
+
+.positions > p {
+  margin: 0;
+  font-size: 14px;
+  color: var(--text-secondary);
+}
+
+.positions > .positions-note {
+  margin-bottom: 16px;
+  font-size: 12px;
+  color: var(--text-muted);
+}
+
+.positions-scroll {
+  /* Contains the visually hidden text, which would otherwise escape the
+     scroll box and widen the page. */
+  position: relative;
+  overflow-x: auto;
+}
+
+.positions-scroll:focus-visible {
+  outline: 2px solid var(--accent-hover);
+  outline-offset: 2px;
+}
+
+.positions-table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 14px;
+  font-variant-numeric: tabular-nums;
+  text-align: right;
+}
+
+.positions-table th,
+.positions-table td {
+  padding: 12px;
+  border-bottom: 1px solid var(--border);
+  white-space: nowrap;
+}
+
+.positions-table thead th {
+  padding: 8px 12px;
+  color: var(--text-muted);
+  font-weight: 600;
+}
+
+.positions-table th:first-child {
+  text-align: left;
+}
+
+.positions-table tbody th {
+  font-weight: 600;
+}
+
+.positions-table tbody tr:last-child th,
+.positions-table tbody tr:last-child td {
+  border-bottom: none;
+}
+
+.positions-table tbody tr:hover {
+  background-color: var(--elevated);
+}
+
+/* Green and red are reserved for gains and losses in the visual system. The
+   signed amount and the spoken direction carry the same meaning without color. */
+.positions-pnl[data-direction='gain'] {
+  color: var(--gain);
+  font-weight: 600;
+}
+
+.positions-pnl[data-direction='loss'] {
+  color: var(--loss);
+  font-weight: 600;
+}
+
+.positions-pnl[data-direction='flat'] {
+  color: var(--text-secondary);
+}
+
+.positions-sr-only {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  overflow: hidden;
+  clip-path: inset(50%);
+  white-space: nowrap;
+}

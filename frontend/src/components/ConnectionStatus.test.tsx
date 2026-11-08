@@ -46,7 +46,13 @@ describe('ConnectionStatus', () => {
   it.each(['reconnecting', 'disconnected', 'error'] as const)('warns that data may be stale when %s', (status) => {
     render(<ConnectionStatus status={status} />)
 
-    expect(screen.getByRole('status')).toHaveTextContent(/out of date|does not mean/)
+    expect(screen.getByRole('status')).toHaveTextContent(/out of date/)
+  })
+
+  it('describes an error as a stream error that stopped live updates', () => {
+    render(<ConnectionStatus status="error" />)
+
+    expect(screen.getByRole('status')).toHaveTextContent('Live updates stopped because of a stream error.')
   })
 
   it('keeps the visual indicator hidden from assistive technology', () => {
@@ -68,7 +74,14 @@ describe('ConnectionStatus', () => {
   it('shows no timestamp when lastUpdatedAt is not supplied', () => {
     const { container } = render(<ConnectionStatus status="connected" />)
 
-    expect(screen.queryByText(/Last update received/)).not.toBeInTheDocument()
+    expect(screen.queryByText(/Data as of/)).not.toBeInTheDocument()
+    expect(container.querySelector('time')).toBeNull()
+  })
+
+  it('shows no timestamp when lastUpdatedAt is an invalid Date', () => {
+    const { container } = render(<ConnectionStatus status="connected" lastUpdatedAt={new Date('not-a-date')} />)
+
+    expect(screen.queryByText(/Data as of/)).not.toBeInTheDocument()
     expect(container.querySelector('time')).toBeNull()
   })
 
@@ -78,7 +91,7 @@ describe('ConnectionStatus', () => {
 
     const time = container.querySelector('time')
     expect(time).toHaveAttribute('dateTime', '2026-10-27T14:30:05.000Z')
-    expect(screen.getByText(/Last update received/)).toContainElement(time)
+    expect(screen.getByText(/Data as of/)).toContainElement(time)
     expect(screen.getByRole('status')).not.toContainElement(time)
   })
 })

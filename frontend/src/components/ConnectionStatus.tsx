@@ -6,7 +6,7 @@ export type ConnectionState = 'connecting' | 'connected' | 'reconnecting' | 'dis
 export interface ConnectionStatusProps {
   /** State of the real-time update stream only, not the REST API or any order. */
   status: ConnectionState
-  /** When the last update was received. Omitted rather than guessed when unknown. */
+  /** How recent the displayed data snapshot is. Omitted rather than guessed when unknown. */
   lastUpdatedAt?: Date
 }
 
@@ -21,7 +21,7 @@ const statusText: Record<ConnectionState, { label: string; detail: string }> = {
   },
   reconnecting: {
     label: 'Reconnecting…',
-    detail: 'Connection lost. Retrying; the data shown may be out of date.',
+    detail: 'Trying to connect. The data shown may be out of date.',
   },
   disconnected: {
     label: 'Disconnected',
@@ -29,7 +29,8 @@ const statusText: Record<ConnectionState, { label: string; detail: string }> = {
   },
   error: {
     label: 'Connection error',
-    detail: 'Could not reach the update stream. The data shown may be out of date. This does not mean an order failed.',
+    detail:
+      'Live updates stopped because of a stream error. The data shown may be out of date. This does not mean an order failed.',
   },
 }
 
@@ -48,7 +49,7 @@ export default function ConnectionStatus({ status, lastUpdatedAt }: ConnectionSt
       </div>
       {lastUpdatedAt && !Number.isNaN(lastUpdatedAt.getTime()) && (
         <p className="connection-status-updated">
-          Last update received{' '}
+          Data as of{' '}
           <time dateTime={lastUpdatedAt.toISOString()}>
             {formatUtcTime(lastUpdatedAt.toISOString())}
           </time>

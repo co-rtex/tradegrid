@@ -77,7 +77,7 @@ export default function ProfitLossBreakdown({
   ]
 
   return (
-    <section className="pnl" aria-labelledby={titleId} aria-busy={isLoading}>
+    <section className="pnl" aria-labelledby={titleId}>
       <h2 id={titleId} className="pnl-title">
         Profit and loss
       </h2>
@@ -87,7 +87,7 @@ export default function ProfitLossBreakdown({
       </p>
       {!isLoading && error && <p role="alert">Could not load profit and loss: {error}</p>}
 
-      <dl className="pnl-rows">
+      <dl className="pnl-rows" aria-busy={isLoading}>
         {rows.map(({ label, cents, helper }) => (
           <div key={label} className="pnl-row">
             <dt className="pnl-label">{label}</dt>

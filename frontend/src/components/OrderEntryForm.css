@@ -22,7 +22,8 @@
 .order-entry-side-options label { display: flex; flex: 1; align-items: center; gap: 8px; min-height: 44px; padding: 8px 12px; border: 1px solid #334155; border-radius: 6px; cursor: pointer; }
 .order-entry-side-options label:has(:checked) { border-color: #22d3ee; background: #164e63; }
 .order-entry-buy { color: #22c55e; }
-.order-entry-sell { color: #f8fafc; }
+.order-entry-sell { color: #ef4444; }
+.order-entry-sell:has(:checked) { color: #fca5a5; }
 .order-entry-sell:has(:checked) { box-shadow: inset 0 -3px #ef4444; }
 .order-entry input { accent-color: #22d3ee; }
 .order-entry :focus-visible { outline: 2px solid #67e8f9; outline-offset: 4px; }
@@ -31,7 +32,8 @@
 .order-entry-status { min-height: 24px; }
 .order-entry-submit { width: 100%; min-height: 44px; margin-top: 16px; padding: 8px 16px; border: 0; border-radius: 6px; background: #22d3ee; color: #0b1120; font: inherit; font-weight: 600; cursor: pointer; }
 .order-entry-submit:hover:enabled { background: #67e8f9; }
-.order-entry :disabled { cursor: wait; opacity: 0.65; }
+.order-entry :disabled { cursor: wait; }
+.order-entry-fields:disabled, .order-entry-submit:disabled { opacity: 0.65; }
 .order-entry-sr-only { position: absolute; width: 1px; height: 1px; padding: 0; overflow: hidden; clip-path: inset(50%); white-space: nowrap; }
 @media (max-width: 32rem) {
   .order-entry { padding: 16px; }

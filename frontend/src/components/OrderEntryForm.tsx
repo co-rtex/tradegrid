@@ -1,4 +1,4 @@
-import { useId, useState, type FormEvent } from 'react'
+import { useEffect, useId, useRef, useState, type FormEvent } from 'react'
 import { MAX_ORDER_QUANTITY, MoneyInputError, parseUsdToCents } from '../lib/money'
 import './OrderEntryForm.css'
 
@@ -26,6 +26,7 @@ export interface OrderEntryFormProps {
   value: OrderEntryValues
   onChange: (value: OrderEntryValues) => void
   onSubmit: (request: OrderEntryRequest) => void
+  /** Set true synchronously in onSubmit, before awaiting work, to block duplicate submissions. */
   pending?: boolean
   success?: string
   fieldErrors?: OrderEntryFieldErrors
@@ -37,9 +38,24 @@ export default function OrderEntryForm({
   success, fieldErrors = {}, submissionError,
 }: OrderEntryFormProps) {
   const id = useId()
+  const formRef = useRef<HTMLFormElement>(null)
+  const wasPending = useRef(pending)
   const [localErrors, setLocalErrors] = useState<OrderEntryFieldErrors>({})
   const errors = { ...fieldErrors, ...localErrors }
   const fieldId = (field: string) => `${id}-${field}`
+
+  useEffect(() => {
+    const finished = wasPending.current && !pending
+    wasPending.current = pending
+    const form = formRef.current
+    if (!finished || !form) return
+    // Chromium drops focus to BODY when the focused control is disabled.
+    // Restore the correction point, but respect users who moved elsewhere.
+    const active = form.ownerDocument.activeElement
+    if (active !== form.ownerDocument.body && active && !form.contains(active)) return
+    const invalid = (['symbol', 'side', 'quantity', 'price'] as const).find((field) => fieldErrors[field])
+    form.querySelector<HTMLElement>(invalid ? `[name="${invalid}"]` : '[type="submit"]')?.focus()
+  }, [pending, fieldErrors])
 
   function change(field: keyof OrderEntryValues, text: string) {
     setLocalErrors((previous) => {
@@ -89,7 +105,7 @@ export default function OrderEntryForm({
     `${fieldId(`${field}-hint`)}${errors[field] ? ` ${fieldId(`${field}-error`)}` : ''}`
 
   return (
-    <form className="order-entry" aria-labelledby={fieldId('heading')} aria-busy={pending} onSubmit={submit} noValidate>
+    <form ref={formRef} className="order-entry" aria-labelledby={fieldId('heading')} aria-busy={pending} onSubmit={submit} noValidate>
       <header className="order-entry-header">
         <div><h2 id={fieldId('heading')}>Place a limit order</h2><p>Demo account: <strong>{userId}</strong></p></div>
         <span className="order-entry-badge">LIMIT</span>

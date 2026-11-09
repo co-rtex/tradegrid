@@ -88,6 +88,32 @@ describe('OrderEntryForm', () => {
     expect(onSubmit).toHaveBeenCalledTimes(1)
   })
 
+  it('restores focus to the first server-invalid field when pending ends', () => {
+    const { update } = setup({ pending: true })
+    // Simulate Chromium's focus loss; jsdom alone does not reproduce it.
+    update({ pending: false, fieldErrors: { price: 'Price rejected.', quantity: 'Quantity rejected.' } })
+    expect(screen.getByLabelText('Quantity (shares)')).toHaveFocus()
+  })
+
+  it.each([{ submissionError: 'Order rejected.' }, { success: 'Order accepted.' }])(
+    'restores submit focus when pending ends without a field error: %j', (result) => {
+      const { update } = setup({ pending: true })
+      update({ pending: false, ...result })
+      expect(screen.getByRole('button', { name: 'Submit limit order' })).toHaveFocus()
+    },
+  )
+
+  it('does not steal focus if the user moved outside the form while pending', async () => {
+    const { update, user } = setup({ pending: true })
+    const outside = document.createElement('button')
+    outside.textContent = 'Other action'
+    document.body.append(outside)
+    await user.click(outside)
+    update({ pending: false, fieldErrors: { price: 'Price rejected.' } })
+    expect(outside).toHaveFocus()
+    outside.remove()
+  })
+
   it('shows parent field/submission errors, preserves inputs, and allows correction', async () => {
     const { user, onSubmit, update } = setup()
     await user.click(screen.getByRole('button'))

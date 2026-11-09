@@ -101,10 +101,10 @@ describe('ProfitLossBreakdown', () => {
   })
 
   it('shows loading as distinct from zero and hides any old amounts', () => {
-    renderBreakdown({ ...bob, isLoading: true })
+    const { container } = renderBreakdown({ ...bob, isLoading: true })
 
     expect(screen.getByRole('status')).toHaveTextContent('Loading profit and loss…')
-    expect(screen.getByRole('region', { name: 'Profit and loss' })).toHaveAttribute('aria-busy', 'true')
+    expect(container.querySelector('dl')).toHaveAttribute('aria-busy', 'true')
     expect(valueOf('Realized P&L')).toBe('Loading…')
     expect(valueOf('Combined P&L')).toBe('Loading…')
     expect(screen.queryByText(/\$/)).not.toBeInTheDocument()

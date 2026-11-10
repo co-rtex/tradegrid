@@ -15,24 +15,26 @@ By the end of the semester, TradeGrid should allow multiple users to:
 - Track positions, cash, and basic P&L
 - See market and portfolio updates in near real time
 
-## Planned Architecture
+## Architecture
 
 ```text
-Trading UI
+Trading UI (React / TypeScript)
     |
-REST API / WebSockets
+REST API (authoritative)  +  WebSocket change notifications
     |
-Go Backend
-    |
+Go Backend: one in-memory exchange
 +-------------------------------+
 | Orders | Risk | Matching      |
 | Executions | Portfolio        |
 +-------------------------------+
-    |
-PostgreSQL
+
+PostgreSQL: schema, migrations, and seeds, validated separately
+(not used by the running backend yet)
 ```
 
-We are intentionally starting with a modular, understandable architecture. Advanced infrastructure can be added only after the core product works.
+We intentionally kept a modular, understandable architecture. Advanced
+infrastructure can be added only after the core product works. See
+[docs/architecture.md](docs/architecture.md).
 
 ## Repository Structure
 
@@ -79,13 +81,35 @@ TradeGrid is organized through the UW–Madison FinTech Club technology team. Ma
 
 ## Status
 
-**Fall 2026: Workshop launch / Sprint 1**
+**Fall 2026: semester MVP integration.** The two-account trading desk,
+portfolio, and live updates are implemented on review branches; see
+[Release Acceptance](docs/release-acceptance.md) for what is merged, what is
+verified automatically, and what still needs a human sign-off before the
+November 30 showcase.
 
-TradeGrid is intentionally early. The project will be built collaboratively through the semester.
+What the MVP includes:
 
-## Developer Setup and Current Demo Status
+- Two simulated demo accounts, Alice and Bob, with $100,000.00 and 100 AAPL +
+  100 MSFT each, chosen with a demo-account selector (not a sign-in).
+- LIMIT orders with cash and share reservations, price-time matching, partial
+  fills, price improvement, and risk rejections, through a REST API.
+- A trading desk with balances, the order book, recent trades, and orders.
+- A portfolio with average cost basis, realized and unrealized P&L, and
+  equity at fixed, simulated reference prices.
+- Live updates over a WebSocket that make other windows re-read the server's
+  data, with reconnect and a manual Refresh fallback.
+- A separately validated PostgreSQL schema with migrations and seeds, and an
+  offline Python trade-activity report.
 
-See the [Developer Setup and Demo Guide](docs/demo.md) to start the current
-backend health server, frontend application shell, and optional PostgreSQL
-migration foundation. It also distinguishes tested fixture behavior from the
-live features that are not yet integrated.
+Everything runs locally in one Go process and one Vite dev server, in memory:
+restarting the backend resets the demo. There is no authentication, real
+market data, order cancellation, or runtime database persistence.
+
+## Developer Setup and Demo
+
+See the [Developer Setup and Demo Runbook](docs/demo.md) to start the backend
+and frontend, run the two-window Alice/Bob demonstration with expected values
+at every step, and run the automated checks. The
+[architecture overview](docs/architecture.md) explains how the pieces fit, and
+the [showcase plan](docs/showcase.md) covers the November 30 presentation and
+handoff.

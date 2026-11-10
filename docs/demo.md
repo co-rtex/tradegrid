@@ -1,231 +1,327 @@
-# TradeGrid Developer Setup and Demo Guide
+# TradeGrid Developer Setup and Demo Runbook
 
-This guide explains what a new contributor can run today and what Sprint 2
-behavior is defined by the contract and tested fixtures but is not yet wired
-into the running browser.
+This guide takes a new contributor from a clean checkout to the two-account
+Alice/Bob demonstration of the semester MVP: a **local, single-process,
+simulated** trading application. It covers prerequisites, startup, ports,
+reset behavior, troubleshooting, shutdown, the scripted demo with the values
+you should see at each step, a 5–7 minute workshop script, and the fallback if
+live updates are unavailable.
 
-## What Works Today
+Every amount below was checked against the running application by the
+browser smoke tests (`frontend/e2e/trading.spec.ts`), which run the same
+sequence.
 
-- The Go backend starts a local HTTP server with `GET /health`, the read
-  API routes, which show the seeded demo accounts, symbols, and exchange
-  state, and order submission (`POST /api/v1/orders`).
-- The React frontend starts a local TradeGrid application shell.
-- PostgreSQL can run locally for migration-tool development.
-- The matching, account, risk, order, and execution packages have tests that
-  verify the fixture scenarios in this guide.
+## What the MVP Is, and What It Is Not
 
-The browser TradingDesk and the order submission endpoint are not implemented
-yet. You can read the exchange's state through the running server, but you
-cannot submit a trade through the running browser or server at this time.
-The full-fill, partial-fill, and risk-rejection sections below are exact
-fixture and contract behavior, not a live demo procedure yet.
+| It is | It is not |
+| --- | --- |
+| Two **simulated demo accounts**, `alice` and `bob`, with $100,000.00 and 100 AAPL + 100 MSFT each | Real money, real securities, or a brokerage |
+| A **demo-account selector**: anyone can choose either account | Authentication or authorization; choosing an account is not a sign-in |
+| One **in-memory** exchange in the Go process | Persistent: **restarting the backend resets everything** to the seed |
+| LIMIT orders with reservations, price-time matching, and settlement | MARKET orders, cancellation, or amendment |
+| Portfolio values at **fixed, simulated reference prices** (AAPL $190.00, MSFT $420.00) | Live or delayed market data; trades never move reference prices |
+| Live **change notifications** over a WebSocket that make the browser re-read REST data | A market-data feed; the socket carries no balances or prices |
+| A separately validated **PostgreSQL schema, migrations, and seeds** | Runtime persistence: the running backend never connects to PostgreSQL |
 
 ## Prerequisites
 
-Install the following tools:
-
 - [Go 1.27.0 or newer](https://go.dev/doc/install) for the backend.
 - Node.js 22.12+ (22.x) or Node.js 24+ with npm for the frontend.
-- [Docker Engine with the Compose plugin](https://docs.docker.com/get-started/get-docker/)
-  only when working on the optional PostgreSQL migration foundation.
-
-Check the installed versions:
+- A current Chromium-based browser, Firefox, or Safari for the demo.
+- Optional: [Docker Engine with the Compose plugin](https://docs.docker.com/get-started/get-docker/)
+  for the PostgreSQL schema validation, and Python 3.10+ for the offline
+  analytics report.
 
 ```bash
 go version
 node --version
 npm --version
-docker compose version
 ```
 
-## Start the Backend
+## Start the Application
 
-From the repository root:
+Use two terminals, both starting from the repository root.
+
+**Terminal 1: backend.**
 
 ```bash
 cd backend
 go run ./cmd/server
 ```
 
-The backend listens only on `127.0.0.1:8080`. In a second terminal, check the
-currently implemented endpoint:
+It prints `TradeGrid backend listening on http://127.0.0.1:8080`. The backend
+listens on the loopback interface only.
 
-```bash
-curl -i http://127.0.0.1:8080/health
-```
-
-It returns `200 OK` and `{"status":"ok"}` when the HTTP server is running.
-This health check does not check PostgreSQL or a running exchange.
-
-Read the exchange's current state, which starts as the seed state below:
-
-```bash
-curl -i http://127.0.0.1:8080/api/v1/accounts
-curl -i "http://127.0.0.1:8080/api/v1/orderbook?symbol=AAPL"
-```
-
-The read routes and their query parameters are listed in the
-[backend README](../backend/README.md#read-the-exchange) and specified in the
-[API contract](api.md).
-
-Set `TRADEGRID_HTTP_PORT` before starting the server to choose another local
-port:
-
-```bash
-TRADEGRID_HTTP_PORT=9090 go run ./cmd/server
-```
-
-Press Ctrl-C in the server terminal to stop it.
-
-## Start the Frontend
-
-From the repository root:
+**Terminal 2: frontend.**
 
 ```bash
 cd frontend
-npm install
+npm ci
 npm run dev
 ```
 
-Vite prints the local development URL. With the current configuration it
-normally uses `http://localhost:5173`; if that port is already in use, Vite
-chooses another port and prints the actual URL. The frontend currently shows a
-TradeGrid application shell and navigation only. It does not connect to the
-backend, display live account data, or submit orders.
+Open the URL Vite prints, normally `http://localhost:5173`.
 
-Press Ctrl-C in the Vite terminal to stop it.
+### Ports and the development proxy
 
-## Optional PostgreSQL Migration Foundation
+| Process | Address | Setting |
+| --- | --- | --- |
+| Go backend | `127.0.0.1:8080` | `TRADEGRID_HTTP_PORT` |
+| Vite frontend | `localhost:5173` | Vite picks the next free port if 5173 is taken and prints it |
 
-PostgreSQL is separate from the Sprint 2 runtime exchange. Start it from the
-repository root only when you are working on database tooling:
+The browser talks only to Vite. Vite forwards `/api` to the backend, including
+the WebSocket upgrade for `/api/v1/stream` (`ws: true` in
+`frontend/vite.config.ts`), so the app uses same-origin URLs and needs no CORS
+setup. To move the backend, set the same variable for both processes:
+
+```bash
+TRADEGRID_HTTP_PORT=9090 go run ./cmd/server   # in backend/
+TRADEGRID_HTTP_PORT=9090 npm run dev           # in frontend/
+```
+
+### Check the backend without the browser
+
+```bash
+curl -i http://127.0.0.1:8080/health
+curl -i http://127.0.0.1:8080/api/v1/accounts
+curl -i "http://127.0.0.1:8080/api/v1/portfolio?userId=alice"
+curl -i http://127.0.0.1:8080/api/v1/stream   # 426 UPGRADE_REQUIRED: it needs a WebSocket client
+```
+
+Every route, request, and error is listed in the
+[backend README](../backend/README.md) and specified in [api.md](api.md),
+[portfolio.md](portfolio.md), and `docs/realtime.md` (the stream contract, in
+PR #81).
+
+## Stop, Restart, and Reset
+
+- **Stop**: press Ctrl-C in each terminal. The backend closes every live
+  stream connection (code 1001) and exits within five seconds.
+- **Reset the demo**: stop and start the backend. Accounts, orders, the book,
+  executions, cost basis, and P&L all return to the seed. There is no reset
+  endpoint. Open browser windows notice the restart on their own: the stream
+  reconnects, sees a lower sequence, clears every value from the old server,
+  and reloads.
+- The frontend can stay running across backend restarts.
+
+## The Screen
+
+- **Demo account** (top of the Dashboard and Portfolio views) chooses the
+  account for the whole app. Each browser window remembers its own choice
+  across reloads, so one window can stay on Alice and another on Bob.
+- **Dashboard** is the trading desk: balances (cash and shares, each total,
+  reserved, and available), the order form, the selected market's order book
+  and recent trades, and the account's orders.
+- **Portfolio** shows the account's positions, cost basis, market value at the
+  reference prices, realized and unrealized P&L, and equity.
+- **Live updates** shows the stream state: Connecting, Connected,
+  Reconnecting, Disconnected, or Connection error. It describes the
+  notification stream only, never whether an order succeeded.
+- **Refresh** re-reads everything from the server at any time.
+- **Balance** in the navigation bar is the selected account's available cash.
+
+Orders and Markets in the navigation are placeholders; their data is on the
+Dashboard.
+
+## Two-Window Demonstration
+
+Open the app in **two separate browser windows** side by side. In window A
+choose **Alice (demo)**; in window B choose **Bob (demo)**. Both start with
+Market **AAPL**. Wait until both show **Live updates: Connected**.
+
+Starting state, in both windows: cash $100,000.00 available, $0.00 reserved;
+AAPL and MSFT 100 shares each, none reserved; the AAPL book shows
+"No resting orders."; no recent trades.
+
+### 1. A resting order
+
+In **A (Alice)**: Side **SELL**, Quantity `10`, Limit price `190.00`, then
+**Submit limit order**.
+
+- A: "Order ord-1 accepted for Alice (demo): resting on the book with no
+  fills, 10 shares remaining." AAPL shows 90 available, 10 reserved,
+  100 total. Cash is unchanged: a SELL reserves shares, not cash.
+- **B (Bob), without pressing anything**: the AAPL book shows
+  "Best ask: $190.00" with 10 shares.
+
+### 2. A full fill with price improvement
+
+In **B (Bob)**: **BUY**, `10`, `191.00`, **Submit limit order**.
+
+- B: "Order ord-2 accepted for Bob (demo): filled, 0 shares remaining. 1 fill:
+  10 shares at $190.00." The trade happens at the **resting** price, $190.00,
+  not Bob's $191.00 limit: Bob reserved $1,910.00, paid $1,900.00, and the
+  $10.00 difference returned. Bob: cash $98,100.00 available, $0.00 reserved;
+  AAPL 110.
+- **A updates by itself**: cash $101,900.00 available; AAPL 90 total, 0
+  reserved; Alice's order shows **Filled**.
+- Both windows: the book is empty again and Recent trades shows one AAPL trade,
+  10 shares at $190.00.
+
+### 3. A partial fill with a resting remainder
+
+In **A**: **SELL**, `10`, `190.00`. In **B**: **BUY**, `25`, `190.50`.
+
+- B: "... partially filled, 15 shares remaining. 1 fill: 10 shares at
+  $190.00." Bob's remaining 15 shares rest as a bid and keep their
+  reservation: 15 × $190.50 = **$2,857.50 reserved**. Bob: cash total
+  $96,200.00, reserved $2,857.50, available $93,342.50; AAPL 120.
+- Both windows: "Best bid: $190.50", one level of 15 shares from 1 order.
+- A: cash $103,800.00 available; AAPL 80.
+
+### 4. A risk rejection
+
+In **B**: **BUY**, `600`, `200.00` ($120,000.00, more than Bob's $93,342.50
+available).
+
+- B shows "Order rejected by the server: ... (INSUFFICIENT_CASH). No order was
+  created." Press **Refresh**: every balance, the book, and Bob's orders are
+  exactly as after step 3. Nothing was reserved, stored, or matched.
+
+### 5. Portfolios at fixed reference prices
+
+Click **Portfolio** in both windows.
+
+- Both: equity **$161,000.00** (cash total plus every share at its reference
+  price), and $0.00 realized, unrealized, and combined P&L. Every fill so far
+  was at $190.00, which is AAPL's reference price, so value only changed form.
+- Alice: cash $103,800.00, AAPL 80, MSFT 100. Bob: cash $96,200.00 (with
+  $2,857.50 still reserved), AAPL 120, MSFT 100. Reserved cash and shares are
+  still owned and still counted once in equity.
+
+### 6. A fill away from the reference price, updating both portfolios live
+
+Keep **both windows on Portfolio**. In a third terminal, Alice sells 5 MSFT at
+$430.00 and Bob buys them (MSFT's reference price is $420.00):
+
+```bash
+curl -s -X POST http://127.0.0.1:8080/api/v1/orders -H 'Content-Type: application/json' \
+  -d '{"userId":"alice","symbol":"MSFT","side":"SELL","type":"LIMIT","price":43000,"quantity":5}'
+curl -s -X POST http://127.0.0.1:8080/api/v1/orders -H 'Content-Type: application/json' \
+  -d '{"userId":"bob","symbol":"MSFT","side":"BUY","type":"LIMIT","price":43000,"quantity":5}'
+```
+
+Both portfolios update without Refresh:
+
+| | Alice | Bob |
+| --- | --- | --- |
+| Cash total | $105,950.00 | $94,050.00 |
+| MSFT | 95 shares, basis $39,900.00 | 105 shares, basis $44,150.00 |
+| Realized P&L | **+$50.00** ($2,150.00 proceeds − $2,100.00 average cost) | $0.00 |
+| Unrealized P&L | $0.00 | **−$50.00** (105 × $420.00 − $44,150.00) |
+| Equity | **$161,050.00** | **$160,950.00** |
+
+Combined, the two accounts still have $322,000.00 and zero P&L: trading only
+moved value between them.
+
+To do this step from the browser instead: in A go to Dashboard, choose Market
+MSFT, and SELL 5 at 430.00; switch A to Portfolio (equity is still
+$161,000.00: a resting order changes nothing); then BUY 5 MSFT at 430.00 in B.
+A's portfolio updates live; B's shows the new values when you open its
+Portfolio.
+
+### 7. Rapid switching
+
+In either window, switch **Demo account** back and forth quickly. The view
+always ends on the account selected last and never shows the previous
+account's numbers, because each switch clears the view and late responses for
+the old account are dropped.
+
+## 5–7 Minute Workshop Demo Script
+
+| Time | Presenter says | Operator does |
+| --- | --- | --- |
+| 0:00 | What TradeGrid is: a simulated, local, two-account exchange we built in Go and React. No real money, no sign-in. | Both windows open: A = Alice, B = Bob, Live updates Connected. |
+| 0:45 | "Orders are reserved before they can trade." | Step 1. Point at Alice's 10 reserved shares and the ask appearing in Bob's window by itself. |
+| 1:45 | "Price-time priority: the resting price wins, and the buyer keeps the improvement." | Step 2. Point at $190.00, not $191.00, and both balances. |
+| 2:45 | "Partial fills leave a remainder that keeps its reservation." | Step 3. Point at $2,857.50 reserved and the $190.50 bid in both windows. |
+| 3:30 | "Risk checks reject what you cannot afford, and nothing changes." | Step 4, then Refresh. |
+| 4:15 | "The portfolio is calculated on the server, at fixed simulated prices." | Step 5. |
+| 5:00 | "One trade, two portfolios updated live." | Step 6 (terminal or browser). |
+| 6:00 | Architecture in one sentence: React reads REST, Go owns the exchange, WebSocket notices only say what to re-read. Limitations: in memory, no auth, no cancellation, simulated prices. | Optionally restart the backend to show the reset. |
+
+Rehearse on the release candidate and reset (restart the backend) right before
+presenting, so the order IDs and values match this guide.
+
+## If Live Updates Are Unavailable
+
+Live updates are a convenience; REST is always authoritative.
+
+- If **Live updates** shows Reconnecting, Disconnected, or Connection error,
+  keep going: after each step press **Refresh** in the other window. Every
+  value above is the same.
+- After Disconnected or Connection error, **Reconnect live updates** restarts
+  the stream.
+- Nothing about orders depends on the stream: a reconnect never resends an
+  order, and the indicator never means an order failed.
+
+## Troubleshooting
+
+| Symptom | Cause and fix |
+| --- | --- |
+| "Could not load the demo accounts" or "The TradeGrid server is not responding" | The backend is not running or is on another port. Start it, or set the same `TRADEGRID_HTTP_PORT` for both processes, then press Retry or Refresh. |
+| `listen on 127.0.0.1:8080: address already in use` | Another backend is running. Stop it (Ctrl-C), or choose another port as above. |
+| Vite opened on 5174 or another port | 5173 was taken. Use the URL Vite prints; the proxy keeps the page same-origin, so live updates still work. |
+| Live updates stays on Connecting or Reconnecting | The backend is down or restarting; it reconnects with backoff (up to 30 s between attempts). Refresh still works once the backend is back. |
+| "Order outcome unknown — refresh to check" | The POST got no readable answer (for example the backend stopped mid-request). The order may or may not exist: press Refresh and check the order list before submitting again. It is never retried automatically. |
+| Values do not match this guide | The backend has state from earlier trades. Restart it to reset, and refresh both windows. |
+| `go: cannot find main module` | Run backend commands from `backend/`. |
+| `npm ci` fails | Use Node.js 22.12+ or 24+, and run it from `frontend/`. |
+
+## Automated Checks
+
+From the repository root (all of these also run in CI):
+
+```bash
+(cd backend && gofmt -l . && go vet ./... && go test ./... && go test -race ./...)
+(cd frontend && npm ci && npm run lint && npm run typecheck && npm test && npm run build)
+(cd frontend && npx playwright install chromium && npm run e2e)
+python3 -m unittest discover -s analytics -v
+```
+
+`npm run e2e` starts its own backend and frontend on ports 18080 and 15173,
+so it does not disturb a demo you have running. See
+[Release Acceptance](release-acceptance.md) for recorded results and the
+human checks that remain.
+
+## Optional: PostgreSQL Schema Validation
+
+The PostgreSQL schema, migrations, and seeds (#39) are a **separately
+validated foundation**. The running backend does not connect to PostgreSQL,
+and no trade is ever written to it.
 
 ```bash
 docker compose up -d --wait postgres
-backend/db/migrate status
 backend/db/migrate up
+backend/db/seed
+backend/db/test-schema
 ```
 
-The container listens on `127.0.0.1:5432` by default. Set
-`TRADEGRID_DB_PORT` to use a different host port. `backend/db/migrate status`
-reports migration state and `backend/db/migrate up` applies pending migrations
-once. `backend/db/test-migrate` tests the migration tool with disposable test
-databases.
+`backend/db/test-schema` works in a disposable database: it checks the
+constraints, that seeding twice changes nothing, and prints sample queries for
+a partial fill, both counterparties, an account's orders, and ordered
+execution history. See [Local PostgreSQL and Migrations](../backend/db/README.md).
+Stop the database with `docker compose stop postgres`.
 
-There are currently no application schema migrations or seed files in
-`backend/db/migrations/`; the PostgreSQL schema and seed design is documented,
-but not implemented. PostgreSQL does not supply, store, or update live account
-state for the current backend.
+## Optional: Offline Trade-Activity Report
 
-See [Local PostgreSQL and Migrations](../backend/db/README.md) for start, stop,
-test-database, and destructive-reset guidance. Do not use
-`docker compose down --volumes` unless you deliberately want to discard local
-database data.
+```bash
+python3 analytics/trade_activity.py docs/fixtures/03-partial-fill.json
+```
 
-## State and Reset Behavior
-
-The running backend holds one in-memory exchange, which the read routes
-expose. Until order submission is wired in, nothing changes that state, so it
-always matches the seed: the two demo accounts below, no orders, and no
-executions. When the server restarts, the exchange begins again from that
-seed. It has no runtime persistence or recovery. PostgreSQL is not connected
-to that runtime.
-
-## Demo Accounts and Symbols
-
-The contract and tested fixtures define two demo accounts. Money values are
-integer cents and quantities are whole shares.
-
-| Account | Starting cash | AAPL | MSFT |
-| --- | ---: | ---: | ---: |
-| `alice` — Alice (demo) | `10000000` cents ($100,000.00) | 100 | 100 |
-| `bob` — Bob (demo) | `10000000` cents ($100,000.00) | 100 | 100 |
-
-At the initial state, cash and both positions have zero reserved amounts. The
-tradable symbols are `AAPL` and `MSFT`.
-
-## Fixture-Defined Trading Scenarios
-
-The scenarios below come from the shared contract and fixture tests. They are
-useful for understanding and testing the implementation. They can be
-replayed through the live HTTP server with `curl` (see the backend
-[README](../backend/README.md#submit-an-order)), but not yet through the
-browser.
-
-### Full Fill with Price Improvement
-
-1. Alice submits a sell for 10 AAPL at `19000` cents ($190.00).
-2. Bob submits a buy for 10 AAPL at `19100` cents ($191.00).
-
-The orders fully fill at the resting sell price of `19000` cents. Bob reserves
-`191000` cents when the buy is accepted, pays `190000` cents, and the remaining
-`1000` cents returns to available cash.
-
-| Account | Cash total | Cash reserved | Cash available | AAPL total | AAPL reserved |
-| --- | ---: | ---: | ---: | ---: | ---: |
-| Alice | `10190000` | `0` | `10190000` | `90` | `0` |
-| Bob | `9810000` | `0` | `9810000` | `110` | `0` |
-
-Alice and Bob each have a `FILLED` order. The AAPL order book is empty. MSFT
-remains 100 shares for each account with no reservation.
-
-### Partial Fill with a Resting Remainder
-
-1. Alice submits a sell for 10 AAPL at `19000` cents ($190.00).
-2. Bob submits a buy for 25 AAPL at `19050` cents ($190.50).
-
-Ten shares fill at `19000` cents. Bob's remaining 15 shares rest as a bid at
-`19050` cents and retain a `285750`-cent ($2,857.50) reservation.
-
-| Account | Cash total | Cash reserved | Cash available | AAPL total | AAPL reserved |
-| --- | ---: | ---: | ---: | ---: | ---: |
-| Alice | `10190000` | `0` | `10190000` | `90` | `0` |
-| Bob | `9810000` | `285750` | `9524250` | `110` | `0` |
-
-Alice's order is `FILLED`. Bob's order is `PARTIALLY_FILLED` with 15 shares
-remaining. The AAPL order book contains one bid: price `19050`, quantity `15`,
-and order count `1`. MSFT is unchanged for both accounts.
-
-### Risk Rejection
-
-Bob submits a buy for 600 AAPL at `20000` cents ($200.00). Its value is
-`12000000` cents ($120,000.00), which exceeds Bob's starting available cash of
-`10000000` cents ($100,000.00).
-
-The expected result is HTTP `422` with code `INSUFFICIENT_CASH`. No order,
-reservation, execution, order-book entry, or account balance changes. Both
-accounts remain at the starting values above.
-
-## Current and Future Work
-
-The following work is not implemented in the live application yet:
-
-- Browser TradingDesk, demo-account selection, and order submission.
-- Manual Refresh; the planned UI must reload authoritative snapshots after an
-  order or a user-requested refresh, without polling or WebSockets.
-- Runtime persistence and recovery.
-- Authentication.
-- WebSockets and live UI updates.
-- Portfolio P&L.
-- Cancellation and amendment APIs.
-- PostgreSQL schema migrations and repeatable demo seeds.
+It summarizes execution records from a JSON file in integer cents, using only
+the standard library. See [analytics/README.md](../analytics/README.md).
 
 ## Source Documents
 
-Use these documents as the source of truth instead of copying their full
-specifications into this guide:
-
-- [Sprint 2 API and Exchange Contract](api.md) for API shapes, rules, account
-  state, reservations, and settlement.
-- [Fixture scenarios](fixtures/) for the exact JSON expected before and after
-  each scenario.
-- [Matching Engine Behavior](matching-engine.md) for price-time priority and
-  fill rules.
-- [Order Domain Model](order-model.md) for order fields, statuses, and
-  lifecycle.
-- [Order Input Validation](order-validation.md) for request-validation rules.
-- [Trading Glossary](glossary.md) for beginner trading terms.
-- [TradeGrid Visual System](visual-system.md) for interface color, typography,
-  and financial-number conventions.
-- [Local PostgreSQL and Migrations](../backend/db/README.md) and
-  [PostgreSQL Schema Design](database-schema.md) for database work.
+- [Sprint 2 API and Exchange Contract](api.md): endpoints, JSON shapes, errors,
+  reservations, and settlement; [fixtures](fixtures/) hold the exact JSON.
+- [Portfolio Accounting Contract](portfolio.md): cost basis, P&L, reference
+  prices, and the portfolio endpoint.
+- `docs/realtime.md` (PR #81): the stream's messages, ordering, and reconnect
+  rules.
+- [Matching Engine Behavior](matching-engine.md), [Order Domain Model](order-model.md),
+  and [Order Input Validation](order-validation.md).
+- [Architecture](architecture.md), [Trading Glossary](glossary.md), and
+  [TradeGrid Visual System](visual-system.md).
+- [PostgreSQL Schema Design](database-schema.md).

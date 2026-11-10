@@ -15,7 +15,10 @@ if (!/^\d{1,5}$/.test(backendPort) || Number(backendPort) < 1 || Number(backendP
 // empty, non-JSON 502, which the client reports as "server unavailable" (and, for a
 // POST, as "outcome unknown") rather than as a contracted rejection.
 const proxy: Record<string, ProxyOptions> = {
-  '/api': { target: `http://127.0.0.1:${backendPort}` },
+  // ws: true forwards the real-time stream's WebSocket upgrade
+  // (GET /api/v1/stream, docs/realtime.md). The proxy keeps the browser's
+  // Origin, which the backend's origin policy allows.
+  '/api': { target: `http://127.0.0.1:${backendPort}`, ws: true },
 }
 
 // https://vite.dev/config/

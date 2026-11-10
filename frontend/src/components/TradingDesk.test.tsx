@@ -1,7 +1,7 @@
-import { act, render, screen, waitFor, within } from '@testing-library/react'
+import { act, cleanup as cleanupDesk, render, screen, waitFor, within } from '@testing-library/react'
 import { useState } from 'react'
 import userEvent from '@testing-library/user-event'
-import { describe, expect, it, vi } from 'vitest'
+import { beforeEach, describe, expect, it, vi } from 'vitest'
 import seedFixture from '../../../docs/fixtures/00-seed.json'
 import noFill from '../../../docs/fixtures/01-no-fill.json'
 import partialFill from '../../../docs/fixtures/03-partial-fill.json'
@@ -19,6 +19,7 @@ import {
   type TradeGridClient,
 } from '../api/client'
 import type { DemoAccount } from '../hooks/useDemoAccounts'
+import { changed, heartbeat, hello, mockSocketFactory } from '../test/mockWebSocket'
 import TradingDesk from './TradingDesk'
 
 // ---------------------------------------------------------------------------
@@ -90,6 +91,12 @@ function deferred<T>() {
 
 const directory: DemoAccount[] = seedAccounts.map(({ userId, displayName }) => ({ userId, displayName }))
 
+/** Sockets the desk opened in the current test; the test plays the server. */
+let sockets = mockSocketFactory()
+beforeEach(() => {
+  sockets = mockSocketFactory()
+})
+
 /** The desk as App mounts it: the account selection lives one level up. */
 function Desk({ client, onBalanceChange }: { client: TradeGridClient; onBalanceChange?: (b: string | undefined) => void }) {
   const [userId, setUserId] = useState('alice')
@@ -100,6 +107,7 @@ function Desk({ client, onBalanceChange }: { client: TradeGridClient; onBalanceC
       userId={userId}
       onUserChange={setUserId}
       onBalanceChange={onBalanceChange}
+      realtime={{ url: 'ws://test/api/v1/stream', createSocket: sockets.create }}
     />
   )
 }
@@ -529,5 +537,179 @@ describe('TradingDesk', () => {
       await screen.findByText('The server returned no tradable symbols, so there is nothing to trade.'),
     ).toBeInTheDocument()
     expect(client.getOrderBook).not.toHaveBeenCalled()
+  })
+})
+
+// ---------------------------------------------------------------------------
+// Live refresh (#77)
+
+describe('TradingDesk live refresh', () => {
+  const server = (fn: () => void) => act(fn)
+  const callCounts = (client: ReturnType<typeof fakeClient>['client']) =>
+    [client.getAccounts, client.getOrders, client.getOrderBook, client.getExecutions].map((fn) => fn.mock.calls.length)
+
+  it('opens one stream, shows its state, and re-reads every snapshot on hello', async () => {
+    const { client } = fakeClient()
+    await renderDesk(client)
+    expect(sockets.sockets).toHaveLength(1)
+    expect(sockets.latest().url).toBe('ws://test/api/v1/stream')
+    expect(screen.getByText('Live updates:').querySelector('strong')).toHaveTextContent('Connecting…')
+
+    const before = callCounts(client)
+    server(() => sockets.latest().send(hello(0)))
+    expect(screen.getByText('Live updates:').querySelector('strong')).toHaveTextContent('Connected')
+    await waitFor(() => expect(callCounts(client)).toEqual(before.map((n) => n + 1)))
+    expect(client.getOrders).toHaveBeenLastCalledWith('alice', expect.anything())
+    expect(client.getOrderBook).toHaveBeenLastCalledWith('AAPL', expect.anything())
+  })
+
+  it('shows another window’s trade without Refresh, from authoritative reads', async () => {
+    const { client, server: backend } = fakeClient(afterAliceSell())
+    const { onBalanceChange } = await renderDesk(client)
+    server(() => sockets.latest().send(hello(1)))
+    expect(await screen.findByText('Best ask: $190.00')).toBeInTheDocument()
+
+    // Bob, in another window, buys 25 at $190.50: 10 fill against Alice.
+    backend.state = afterPartialFill()
+    server(() =>
+      sockets.latest().send(changed(2, { symbol: 'AAPL', userId: 'bob', orderId: 'ord-2', executionCount: 1, affectedUserIds: ['alice', 'bob'] })),
+    )
+    expect(await screen.findByText('Best bid: $190.50')).toBeInTheDocument()
+    expect(within(screen.getByRole('table', { name: 'Recent executions · newest first' })).getAllByRole('row')).toHaveLength(2)
+    expect(within(screen.getByRole('table', { name: 'Orders for Alice (demo)' })).getAllByRole('row')[1]).toHaveTextContent('Filled')
+    expect(screen.queryByRole('button', { name: 'Refresh' })).toBeEnabled()
+    expect(onBalanceChange).toHaveBeenLastCalledWith('$101,900.00 available')
+  })
+
+  it('re-reads only what a change affects, and nothing for another symbol and account', async () => {
+    const { client } = fakeClient()
+    await renderDesk(client)
+    server(() => sockets.latest().send(hello(0)))
+    await waitFor(() => expect(client.getOrders).toHaveBeenCalledTimes(2))
+
+    let before = callCounts(client)
+    server(() => sockets.latest().send(changed(1, { symbol: 'MSFT', userId: 'bob', affectedUserIds: ['bob'] })))
+    // A later relevant change proves the first one was handled and ignored.
+    server(() => sockets.latest().send(changed(2, { symbol: 'AAPL', userId: 'bob', affectedUserIds: ['bob'] })))
+    await waitFor(() => expect(client.getOrderBook.mock.calls.length).toBe(before[2] + 1))
+    expect(callCounts(client)).toEqual([before[0], before[1], before[2] + 1, before[3] + 1])
+
+    before = callCounts(client)
+    server(() => sockets.latest().send(changed(3, { symbol: 'MSFT', userId: 'alice', affectedUserIds: ['alice'] })))
+    await waitFor(() => expect(client.getOrders.mock.calls.length).toBe(before[1] + 1))
+    expect(callCounts(client)).toEqual([before[0] + 1, before[1] + 1, before[2], before[3]])
+  })
+
+  it('coalesces a burst of changes into one read per view', async () => {
+    const { client } = fakeClient()
+    await renderDesk(client)
+    server(() => sockets.latest().send(hello(0)))
+    await waitFor(() => expect(client.getOrders).toHaveBeenCalledTimes(2))
+    const before = callCounts(client)
+    server(() => {
+      for (let seq = 1; seq <= 5; seq++) sockets.latest().send(changed(seq, { affectedUserIds: ['alice', 'bob'] }))
+    })
+    await waitFor(() => expect(callCounts(client)).toEqual(before.map((n) => n + 1)))
+  })
+
+  it('never shows the previous account’s orders when a live read returns after a switch', async () => {
+    const { client } = fakeClient(afterPartialFill())
+    const { user } = await renderDesk(client)
+    server(() => sockets.latest().send(hello(2)))
+    await waitFor(() => expect(client.getOrders).toHaveBeenCalledTimes(2))
+
+    const lateAlice = deferred<OrderDto[]>()
+    client.getOrders.mockImplementationOnce(() => lateAlice.promise)
+    server(() => sockets.latest().send(changed(3, { affectedUserIds: ['alice'] })))
+    await waitFor(() => expect(client.getOrders).toHaveBeenCalledTimes(3))
+
+    await user.selectOptions(screen.getByLabelText('Demo account'), 'bob')
+    expect(await screen.findByRole('table', { name: 'Orders for Bob (demo)' })).toBeInTheDocument()
+    await act(async () => lateAlice.resolve(partialFill.after['GET /api/v1/orders?userId=alice'].orders as OrderDto[]))
+    expect(screen.getByRole('heading', { name: 'Orders for Bob (demo)' })).toBeInTheDocument()
+    const rows = within(screen.getByRole('table', { name: 'Orders for Bob (demo)' })).getAllByRole('row')
+    expect(rows).toHaveLength(2)
+    expect(rows[1]).toHaveTextContent('Buy')
+  })
+
+  it('re-reads everything after a reconnect and after a missed event', async () => {
+    const { client } = fakeClient()
+    await renderDesk(client)
+    server(() => sockets.latest().send(hello(0)))
+    await waitFor(() => expect(client.getOrders).toHaveBeenCalledTimes(2))
+
+    // A heartbeat ahead of what this client saw means events were missed.
+    let before = callCounts(client)
+    server(() => sockets.latest().send(heartbeat(3)))
+    await waitFor(() => expect(callCounts(client)).toEqual(before.map((n) => n + 1)))
+
+    before = callCounts(client)
+    server(() => sockets.latest().serverClose(1001))
+    expect(screen.getByText('Live updates:').querySelector('strong')).toHaveTextContent('Reconnecting…')
+    await waitFor(() => expect(sockets.sockets).toHaveLength(2), { timeout: 2000 })
+    server(() => sockets.latest().send(hello(3)))
+    await waitFor(() => expect(callCounts(client)).toEqual(before.map((n) => n + 1)))
+    expect(screen.getByText('Live updates:').querySelector('strong')).toHaveTextContent('Connected')
+  })
+
+  it('drops every value from a restarted server before showing the new ones', async () => {
+    const { client, server: backend } = fakeClient(afterPartialFill())
+    await renderDesk(client)
+    server(() => sockets.latest().send(hello(2)))
+    expect(await screen.findByText('Best bid: $190.50')).toBeInTheDocument()
+
+    server(() => sockets.latest().serverClose(1001))
+    await waitFor(() => expect(sockets.sockets).toHaveLength(2), { timeout: 2000 })
+    backend.state = seedState()
+    const book = deferred<BookSnapshotDto>()
+    client.getOrderBook.mockImplementationOnce(() => book.promise)
+    server(() => sockets.latest().send(hello(0))) // lower than before: a restart
+    await waitFor(() => expect(screen.queryByText('Best bid: $190.50')).not.toBeInTheDocument())
+    expect(screen.getByText('Loading order book…')).toBeInTheDocument()
+    await act(async () => book.resolve(emptyBook('AAPL')))
+    expect(await screen.findByText('No resting orders.')).toBeInTheDocument()
+    expect(cashValue('Cash available')).toBe('$100,000.00')
+  })
+
+  it('keeps manual Refresh and offers a reconnect after a stream error', async () => {
+    const { client } = fakeClient()
+    const { user } = await renderDesk(client)
+    server(() => sockets.latest().send({ ...hello(0), version: 2 }))
+    expect(screen.getByText('Live updates:').querySelector('strong')).toHaveTextContent('Connection error')
+    expect(screen.getByText(/This does not mean an order failed/)).toBeInTheDocument()
+
+    const before = callCounts(client)
+    await user.click(screen.getByRole('button', { name: 'Refresh' }))
+    await waitFor(() => expect(callCounts(client)).toEqual(before.map((n) => n + 1)))
+
+    await user.click(screen.getByRole('button', { name: 'Reconnect live updates' }))
+    expect(sockets.sockets).toHaveLength(2)
+    server(() => sockets.latest().send(hello(0)))
+    expect(screen.queryByRole('button', { name: 'Reconnect live updates' })).not.toBeInTheDocument()
+  })
+
+  it('never retries an order POST when the stream reconnects', async () => {
+    const { client } = fakeClient()
+    client.submitOrder.mockRejectedValue(new OrderOutcomeUnknownError(new ApiError('network', 'POST failed')))
+    const { user } = await renderDesk(client)
+    server(() => sockets.latest().send(hello(0)))
+    await placeOrder(user, { side: 'BUY', quantity: '1', price: '190.00' })
+    expect(await screen.findByText(/Order outcome unknown/)).toBeInTheDocument()
+
+    server(() => sockets.latest().serverClose(1006))
+    await waitFor(() => expect(sockets.sockets).toHaveLength(2), { timeout: 2000 })
+    server(() => sockets.latest().send(hello(1)))
+    await waitFor(() => expect(client.getOrders.mock.calls.length).toBeGreaterThan(2))
+    expect(client.submitOrder).toHaveBeenCalledTimes(1)
+    expect(screen.getByText(/Order outcome unknown/)).toBeInTheDocument()
+  })
+
+  it('closes its stream when unmounted', async () => {
+    const { client } = fakeClient()
+    await renderDesk(client)
+    const socket = sockets.latest()
+    cleanupDesk()
+    expect(socket.closedByClient).toBe(true)
+    expect(socket.listenerCount()).toBe(0)
   })
 })

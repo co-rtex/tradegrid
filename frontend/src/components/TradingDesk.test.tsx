@@ -74,6 +74,9 @@ function fakeClient(initial: ServerState = seedState()) {
     submitOrder: vi.fn<TradeGridClient['submitOrder']>(async () => {
       throw new Error('submitOrder not stubbed')
     }),
+    getPortfolio: vi.fn<TradeGridClient['getPortfolio']>(async () => {
+      throw new Error('the desk does not read portfolios')
+    }),
   } satisfies TradeGridClient
   return { client, server }
 }

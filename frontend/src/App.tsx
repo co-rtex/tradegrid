@@ -1,11 +1,11 @@
 import { useState } from 'react'
 import { isServerUnavailable, tradeGridClient, type TradeGridClient } from './api/client'
 import { describeLoadError } from './api/describe'
-import PortfolioSummary from './components/PortfolioSummary'
 import ServerHint from './components/ServerHint'
 import TopNavigation, { type NavigationItem } from './components/TopNavigation'
 import TradingDesk from './components/TradingDesk'
 import { useDemoAccounts, useSelectedAccount } from './hooks/useDemoAccounts'
+import PortfolioPage from './pages/PortfolioPage'
 import './App.css'
 
 export interface AppProps {
@@ -68,15 +68,13 @@ function App({ client = tradeGridClient }: AppProps) {
     )
   } else {
     view = (
-      <div className="app-preview">
-        {/* The card's values are built in (#23), not read from the server,
-            so it is labeled and kept off the live desk. */}
-        <p className="app-preview-label">
-          <strong>Design preview with sample values.</strong> This card is not connected to your demo account. Live
-          cash and share positions are on the Dashboard.
-        </p>
-        <PortfolioSummary />
-      </div>
+      <PortfolioPage
+        client={client}
+        accounts={accounts}
+        userId={userId}
+        onUserChange={setUserId}
+        onBalanceChange={setBalance}
+      />
     )
   }
 

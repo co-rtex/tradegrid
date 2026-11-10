@@ -16,6 +16,21 @@ const responses: Record<string, unknown> = {
   '/api/v1/orders?userId=bob': noFill.after['GET /api/v1/orders?userId=bob'],
   '/api/v1/orderbook?symbol=AAPL': noFill.after['GET /api/v1/orderbook?symbol=AAPL'],
   '/api/v1/executions?symbol=AAPL': noFill.after['GET /api/v1/executions?symbol=AAPL'],
+  '/api/v1/portfolio?userId=bob': seedPortfolio('bob', 'Bob (demo)'),
+}
+
+/** A seeded account's portfolio (docs/portfolio.md, "Seeded Positions"). */
+function seedPortfolio(userId: string, displayName: string) {
+  const position = (symbol: string, referencePrice: number) => ({
+    symbol, total: 100, reserved: 0, available: 100, costBasis: 100 * referencePrice, referencePrice,
+    marketValue: 100 * referencePrice, unrealizedPnl: 0, realizedPnl: 0,
+  })
+  return {
+    userId, displayName, asOfSequence: 1,
+    cash: { total: 10000000, reserved: 0, available: 10000000 },
+    positions: [position('AAPL', 19000), position('MSFT', 42000)],
+    totals: { costBasis: 6100000, marketValue: 6100000, unrealizedPnl: 0, realizedPnl: 0, equity: 16100000 },
+  }
 }
 
 function serve(overrides: Record<string, () => Response> = {}) {
@@ -66,20 +81,20 @@ describe('App', () => {
     expect(await within(balance).findByText('$100,000.00 available')).toBeInTheDocument()
   })
 
-  it('keeps the sample portfolio card off the live desk and labels it as sample data', async () => {
+  it('shows the same selected account’s server portfolio on the Portfolio view', async () => {
     const user = userEvent.setup()
     render(<App />)
-    await screen.findByRole('heading', { name: 'Orders for Alice (demo)' })
-    expect(screen.queryByRole('region', { name: 'Portfolio summary' })).not.toBeInTheDocument()
+    await user.selectOptions(await screen.findByLabelText('Demo account'), 'bob')
+    await screen.findByRole('heading', { name: 'Orders for Bob (demo)' })
 
     await user.click(screen.getByRole('button', { name: 'Portfolio' }))
-    expect(screen.getByRole('region', { name: 'Portfolio summary' })).toBeInTheDocument()
-    expect(screen.getByText('Design preview with sample values.')).toBeVisible()
-    expect(screen.getByText(/not connected to your demo account/)).toBeVisible()
-    // Only the active view is mounted, and the desk's balance is not left in
-    // the navigation bar.
+    // Only the active view is mounted.
     expect(screen.queryByRole('region', { name: 'Trading desk' })).not.toBeInTheDocument()
-    expect(screen.getByText('Balance').parentElement).toHaveTextContent('—')
+    expect(screen.getByLabelText('Demo account')).toHaveValue('bob')
+    const card = await screen.findByRole('region', { name: 'Portfolio summary' })
+    expect(card).toHaveTextContent('$161,000.00')
+    expect(vi.mocked(fetch)).toHaveBeenCalledWith('/api/v1/portfolio?userId=bob', expect.anything())
+    expect(within(screen.getByText('Balance').parentElement!).getByText('$100,000.00 available')).toBeInTheDocument()
   })
 
   it('loads the demo accounts once for the whole app and keeps the selection across views', async () => {

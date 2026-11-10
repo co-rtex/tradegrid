@@ -212,3 +212,52 @@ describe('default fetch', () => {
     expect(fetch).toHaveBeenCalledWith('/api/v1/symbols', expect.objectContaining({ method: 'GET' }))
   })
 })
+
+describe('createTradeGridClient getPortfolio', () => {
+  // Alice after docs/portfolio.md worked example 1, exactly as documented.
+  const alice = {
+    userId: 'alice',
+    displayName: 'Alice (demo)',
+    asOfSequence: 2,
+    cash: { total: 10185000, reserved: 0, available: 10185000 },
+    positions: [
+      { symbol: 'AAPL', total: 90, reserved: 0, available: 90, costBasis: 1710000, referencePrice: 19000,
+        marketValue: 1710000, unrealizedPnl: 0, realizedPnl: -5000 },
+      { symbol: 'MSFT', total: 100, reserved: 0, available: 100, costBasis: 4200000, referencePrice: 42000,
+        marketValue: 4200000, unrealizedPnl: 0, realizedPnl: 0 },
+    ],
+    totals: { costBasis: 5910000, marketValue: 5910000, unrealizedPnl: 0, realizedPnl: -5000, equity: 16095000 },
+  }
+
+  it('reads one account’s portfolio as the server sent it', async () => {
+    const { client, fetch } = setup(() => jsonResponse(200, alice))
+    await expect(client.getPortfolio('alice')).resolves.toEqual(alice)
+    expect(fetch.mock.calls[0]?.[0]).toBe('/api/v1/portfolio?userId=alice')
+  })
+
+  it('rejects a response for another account instead of showing it', async () => {
+    const { client } = setup(() => jsonResponse(200, { ...alice, userId: 'bob' }))
+    const error = await rejection(client.getPortfolio('alice'))
+    expect(error).toBeInstanceOf(ApiError)
+    expect((error as ApiError).kind).toBe('invalid-response')
+  })
+
+  it.each([
+    ['a missing total', { ...alice, totals: { ...alice.totals, equity: undefined } }],
+    ['a fractional amount', { ...alice, cash: { ...alice.cash, total: 10185000.5, available: 10185000.5 } }],
+    ['a position amount as a string', { ...alice, positions: [{ ...alice.positions[0], marketValue: '1710000' }] }],
+    ['no positions array', { ...alice, positions: null }],
+  ])('rejects %s', async (_, body) => {
+    const { client } = setup(() => jsonResponse(200, body))
+    const error = await rejection(client.getPortfolio('alice'))
+    expect((error as ApiError).kind).toBe('invalid-response')
+  })
+
+  it('reports a contracted UNKNOWN_USER as an http error', async () => {
+    const { client } = setup(() =>
+      jsonResponse(404, { error: { code: 'UNKNOWN_USER', message: 'unknown user "carol"', field: 'userId' } }),
+    )
+    const error = (await rejection(client.getPortfolio('carol'))) as ApiError
+    expect([error.kind, error.status, error.code, error.field]).toEqual(['http', 404, 'UNKNOWN_USER', 'userId'])
+  })
+})

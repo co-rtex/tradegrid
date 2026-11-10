@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useEffectEvent, useId, useRef, useState } from 'react'
+import { useEffect, useEffectEvent, useId, useRef, useState } from 'react'
 import {
   ApiError,
   OrderOutcomeUnknownError,
@@ -14,6 +14,7 @@ import {
 } from '../api/client'
 import { describeLoadError } from '../api/describe'
 import type { DemoAccount } from '../hooks/useDemoAccounts'
+import { useSnapshot } from '../hooks/useSnapshot'
 import { formatUsdCents, formatWholeShares } from '../lib/money'
 import DemoAccountSelect from './DemoAccountSelect'
 import OrderBook from './OrderBook'
@@ -40,57 +41,6 @@ export interface TradingDeskProps {
    * navigation bar, or `undefined` while no server value is known.
    */
   onBalanceChange?: (balance: string | undefined) => void
-}
-
-// ---------------------------------------------------------------------------
-// Snapshots
-
-interface Snapshot<T> {
-  data: T | null
-  loading: boolean
-  error: unknown
-}
-
-const emptySnapshot = { data: null, loading: false, error: null }
-
-/**
- * One server snapshot (accounts, orders, book, or executions) and its loader.
- *
- * Starting a load aborts the previous one, and only the latest load may write
- * state: a response that arrives after the user switched account or symbol, or
- * after a newer refresh, is dropped even if the fetch ignored the abort.
- */
-function useSnapshot<T>() {
-  const [snapshot, setSnapshot] = useState<Snapshot<T>>(emptySnapshot)
-  const latest = useRef<AbortController | null>(null)
-
-  const load = useCallback(
-    async (fetcher: (signal: AbortSignal) => Promise<T>, { keepData = false } = {}): Promise<T | undefined> => {
-      latest.current?.abort()
-      const controller = new AbortController()
-      latest.current = controller
-      setSnapshot((previous) => ({ data: keepData ? previous.data : null, loading: true, error: null }))
-      try {
-        const data = await fetcher(controller.signal)
-        if (latest.current !== controller) return undefined // stale
-        setSnapshot({ data, loading: false, error: null })
-        return data
-      } catch (error) {
-        if (latest.current !== controller) return undefined // stale
-        // Drop old values on failure rather than show them as current.
-        setSnapshot({ data: null, loading: false, error })
-        return undefined
-      }
-    },
-    [],
-  )
-
-  const cancel = useCallback(() => {
-    latest.current?.abort()
-    latest.current = null
-  }, [])
-
-  return [snapshot, load, cancel] as const
 }
 
 // ---------------------------------------------------------------------------

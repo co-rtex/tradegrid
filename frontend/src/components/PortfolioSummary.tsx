@@ -1,18 +1,29 @@
+import { formatUsdCents } from '../lib/money'
 import './PortfolioSummary.css'
 
-const portfolio = {
-  cashBalance: 100000,
-  totalValue: 100000,
-  profitLoss: 0,
-  positions: [],
+export interface PortfolioSummaryProps {
+  /** `totals.equity` from GET /api/v1/portfolio, in integer cents. */
+  equity: number
+  /** `cash.total`, in integer cents (reserved cash is still owned). */
+  cashTotal: number
+  /** Realized plus unrealized P&L, in integer cents, or `null` when it cannot be shown. */
+  combinedPnl: number | null
+  /** Whether the account holds any shares. */
+  hasPositions: boolean
 }
 
-const currency = new Intl.NumberFormat('en-US', {
-  style: 'currency',
-  currency: 'USD',
-})
+/** Formats a server amount; a malformed one shows a placeholder, never a guess. */
+function usd(cents: number | null, options?: { showPlus?: boolean }): string {
+  if (cents === null) return 'Unavailable'
+  try {
+    return formatUsdCents(cents, options)
+  } catch {
+    return '—'
+  }
+}
 
-function PortfolioSummary() {
+/** The portfolio card (#11, #23), showing server-calculated totals for one account. */
+function PortfolioSummary({ equity, cashTotal, combinedPnl, hasPositions }: PortfolioSummaryProps) {
   return (
     <section className="portfolio-summary" aria-label="Portfolio summary">
       <h2 className="portfolio-heading">Portfolio</h2>
@@ -20,10 +31,10 @@ function PortfolioSummary() {
       <div className="portfolio-total">
         <div>
           <p className="portfolio-label">Total Portfolio Value</p>
-          <p className="portfolio-value">{currency.format(portfolio.totalValue)}</p>
+          <p className="portfolio-value">{usd(equity)}</p>
         </div>
         <svg className="portfolio-chart" viewBox="0 0 240 100" aria-hidden="true" focusable="false">
-          {/* Flat while P&L is zero; a performance curve needs historical values. */}
+          {/* Decorative only: there is no value history to chart. */}
           <path className="portfolio-chart-fill" d="M4 50 H236 V100 H4 Z" />
           <path className="portfolio-chart-line" d="M4 50 H236" />
         </svg>
@@ -32,15 +43,15 @@ function PortfolioSummary() {
       <dl className="portfolio-metrics">
         <div>
           <dt className="portfolio-label">Cash Balance</dt>
-          <dd>{currency.format(portfolio.cashBalance)}</dd>
+          <dd>{usd(cashTotal)}</dd>
         </div>
         <div>
           <dt className="portfolio-label">P&amp;L</dt>
-          <dd>{currency.format(portfolio.profitLoss)}</dd>
+          <dd>{usd(combinedPnl, { showPlus: true })}</dd>
         </div>
       </dl>
 
-      {portfolio.positions.length === 0 && (
+      {!hasPositions && (
         <div className="portfolio-empty">
           <svg className="portfolio-icon" viewBox="0 0 48 48" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true" focusable="false">
             <rect x="7" y="15" width="34" height="26" rx="4" />

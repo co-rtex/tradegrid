@@ -20,6 +20,7 @@
 import type { OrderBookSnapshot } from '../components/OrderBook'
 import type { OrderEntryRequest } from '../components/OrderEntryForm'
 import type { OrderDto } from '../components/OrderList'
+import type { PortfolioPositionDto } from '../components/PositionsTable'
 import type { Execution } from '../components/RecentTrades'
 
 export type { OrderDto, OrderEntryRequest }
@@ -49,6 +50,32 @@ export interface AccountDto {
   displayName: string
   cash: BalanceDto
   positions: PositionDto[]
+}
+
+export type { PortfolioPositionDto }
+
+/** Sums over `positions`, plus `equity = cash.total + marketValue` (docs/portfolio.md). */
+export interface PortfolioTotalsDto {
+  costBasis: number
+  marketValue: number
+  unrealizedPnl: number
+  realizedPnl: number
+  equity: number
+}
+
+/**
+ * `GET /api/v1/portfolio?userId=...`. Every amount is calculated by the
+ * server in integer cents at fixed simulated reference prices; the browser
+ * only formats them.
+ */
+export interface PortfolioDto {
+  userId: string
+  displayName: string
+  /** Acceptance sequence of the last committed submission included. */
+  asOfSequence: number
+  cash: BalanceDto
+  positions: PortfolioPositionDto[]
+  totals: PortfolioTotalsDto
 }
 
 export interface SubmitOrderResult {
@@ -109,6 +136,8 @@ export interface TradeGridClient {
     symbol: string,
     options?: RequestOptions & { userId?: string; limit?: number },
   ): Promise<ExecutionDto[]>
+  /** The account's server-valued portfolio. A response for another account is an invalid response. */
+  getPortfolio(userId: string, options?: RequestOptions): Promise<PortfolioDto>
   /** Sends exactly one POST. Never retried; see `OrderOutcomeUnknownError`. */
   submitOrder(request: OrderEntryRequest): Promise<SubmitOrderResult>
 }
@@ -135,13 +164,11 @@ function isArrayOfRecords(value: unknown): value is Record<string, unknown>[] {
   return Array.isArray(value) && value.every(isRecord)
 }
 
+/** Money and quantities are integers on the wire (docs/api.md); a fraction is not a valid amount. */
+const isAmount = (value: unknown): value is number => typeof value === 'number' && Number.isSafeInteger(value)
+
 function isBalance(value: unknown): value is BalanceDto {
-  return (
-    isRecord(value) &&
-    typeof value.total === 'number' &&
-    typeof value.reserved === 'number' &&
-    typeof value.available === 'number'
-  )
+  return isRecord(value) && isAmount(value.total) && isAmount(value.reserved) && isAmount(value.available)
 }
 
 /** `{ "<key>": [ {...}, ... ] }` where every item passes `item`. */
@@ -183,6 +210,27 @@ const validateBook: Validate<BookSnapshotDto> = (body) =>
   isArrayOfRecords(body.asks)
     ? (body as unknown as BookSnapshotDto)
     : undefined
+
+const portfolioPositionFields = [
+  'total', 'reserved', 'available', 'costBasis', 'referencePrice', 'marketValue', 'unrealizedPnl', 'realizedPnl',
+] as const
+const portfolioTotalFields = ['costBasis', 'marketValue', 'unrealizedPnl', 'realizedPnl', 'equity'] as const
+
+/** Requires every contracted field, as integers, and the account that was asked for. */
+function validatePortfolio(userId: string): Validate<PortfolioDto> {
+  return (body) =>
+    isRecord(body) &&
+    body.userId === userId &&
+    typeof body.displayName === 'string' &&
+    isAmount(body.asOfSequence) &&
+    isBalance(body.cash) &&
+    isArrayOfRecords(body.positions) &&
+    body.positions.every((p) => typeof p.symbol === 'string' && portfolioPositionFields.every((f) => isAmount(p[f]))) &&
+    isRecord(body.totals) &&
+    portfolioTotalFields.every((f) => isAmount((body.totals as Record<string, unknown>)[f]))
+      ? (body as unknown as PortfolioDto)
+      : undefined
+}
 
 const validateSubmit: Validate<SubmitOrderResult> = (body) =>
   isRecord(body) &&
@@ -315,6 +363,8 @@ export function createTradeGridClient(options: ClientOptions = {}): TradeGridCli
       send('GET', `/orderbook${query({ symbol, depth })}`, validateBook, { signal }),
     getExecutions: (symbol, { signal, userId, limit } = {}) =>
       send('GET', `/executions${query({ symbol, userId, limit })}`, validateExecutions, { signal }),
+    getPortfolio: (userId, { signal } = {}) =>
+      send('GET', `/portfolio${query({ userId })}`, validatePortfolio(userId), { signal }),
 
     async submitOrder(request) {
       // Send only the six client-owned fields; anything else is UNKNOWN_FIELD.

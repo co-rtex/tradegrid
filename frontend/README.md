@@ -100,6 +100,18 @@ deployment must serve `/api/v1` from the same origin as the built files.
 - All amounts shown are the server's integer cents and shares, only formatted
   for display by `src/lib/money.ts`.
 
+### The portfolio view
+
+**Portfolio** shows the selected demo account's `GET /api/v1/portfolio`
+([contract](../docs/portfolio.md)): cash, positions, cost basis, market value at
+the fixed **simulated** reference prices, realized and unrealized P&L, and
+equity. Every amount is calculated by the server; the page only formats it. The
+one exception is the card's combined P&L, the exact integer sum of the server's
+realized and unrealized totals (the contract has no combined field). Switching
+account clears the view before loading, a late response for the previous
+account is dropped, and the client rejects a response for any account other
+than the one requested. **Refresh** reloads it.
+
 Run all commands below from `frontend/` as well.
 
 ## Checks and production build
@@ -165,6 +177,8 @@ frontend/
   src/
     main.tsx         Mounts React into the HTML page
     App.tsx          App shell: navigation, account selection, active view
+    pages/
+      PortfolioPage.tsx The selected account's server-valued portfolio
     App.test.tsx     App-level navigation, selection, and balance tests
     App.css          App shell styles
     index.css        Global styles and basic browser defaults
@@ -180,17 +194,19 @@ frontend/
       OrderBook.tsx  Aggregated bids and asks for one symbol
       RecentTrades.tsx Executions for one symbol, newest first
       OrderList.tsx  One account's orders and their status
-      PortfolioSummary.tsx Portfolio card layout with built-in sample values
+      PortfolioSummary.tsx Portfolio card: equity, cash, and P&L from the server
       TopNavigation.tsx Reusable top navigation and its props
       PositionsTable.tsx, ProfitLossBreakdown.tsx Portfolio display components
       ConnectionStatus.tsx Live-stream connection indicator
       *.css, *.test.tsx Styles and behavioral tests beside each component
     hooks/
       useDemoAccounts.ts App-level demo-account directory and selection
+      useSnapshot.ts One REST snapshot with stale-response protection
       useRealtime.ts Real-time stream hook (docs/realtime.md)
     lib/
       money.ts       Integer cents and share formatting and price parsing
       realtime.ts    Stream client: messages, sequences, reconnect
+      portfolio.ts   Display-only combined P&L from the server totals
     test/
       setup.ts       Test setup: DOM matchers and cleanup
   index.html         HTML entry point and page title

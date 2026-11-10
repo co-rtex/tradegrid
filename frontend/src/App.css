@@ -39,25 +39,6 @@
   color: #cbd5e1;
 }
 
-.app-preview {
-  display: grid;
-  gap: 16px;
-}
-
-.app-preview-label {
-  margin: 0;
-  padding: 8px 12px;
-  border-left: 3px solid #22d3ee;
-  border-radius: 4px;
-  background-color: #164e63;
-  color: #f8fafc;
-  font-size: 14px;
-}
-
-.app-preview .portfolio-summary {
-  margin: 0;
-}
-
 /* Loading and error states for the demo-account directory. */
 .app-message {
   margin: 0;

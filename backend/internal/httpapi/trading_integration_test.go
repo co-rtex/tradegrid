@@ -8,6 +8,7 @@ import (
 	"slices"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -216,7 +217,10 @@ func (c client) checkConsistent() {
 			filled[e.SellOrderID] += e.Quantity
 		}
 	}
-	resting := map[string]map[int64]int64{"BUY": {}, "SELL": {}}
+	resting := map[string]map[string]map[int64]int64{}
+	for _, symbol := range []string{"AAPL", "MSFT"} {
+		resting[symbol] = map[string]map[int64]int64{"BUY": {}, "SELL": {}}
+	}
 	for _, o := range all {
 		if got := o.Quantity - o.Remaining; got != filled[o.ID] {
 			c.t.Errorf("order %s filled %d, executions say %d", o.ID, got, filled[o.ID])
@@ -236,9 +240,7 @@ func (c client) checkConsistent() {
 		} else {
 			needShares[o.UserID+" "+o.Symbol] += o.Remaining
 		}
-		if o.Symbol == "AAPL" {
-			resting[o.Side][o.Price] += o.Remaining
-		}
+		resting[o.Symbol][o.Side][o.Price] += o.Remaining
 	}
 	for user, a := range accts {
 		if a.Cash.Reserved != needCash[user] {
@@ -250,19 +252,84 @@ func (c client) checkConsistent() {
 			}
 		}
 	}
-	b := c.book("AAPL")
-	for side, levels := range map[string][]wireLevel{"BUY": b.Bids, "SELL": b.Asks} {
-		got := map[int64]int64{}
-		for _, l := range levels {
-			got[l.Price] += l.Quantity
+	for _, symbol := range []string{"AAPL", "MSFT"} {
+		b := c.book(symbol)
+		for side, levels := range map[string][]wireLevel{"BUY": b.Bids, "SELL": b.Asks} {
+			got := map[int64]int64{}
+			for _, l := range levels {
+				got[l.Price] += l.Quantity
+			}
+			if fmt.Sprint(got) != fmt.Sprint(resting[symbol][side]) {
+				c.t.Errorf("%s %s levels %v, open orders %v", symbol, side, got, resting[symbol][side])
+			}
 		}
-		if fmt.Sprint(got) != fmt.Sprint(resting[side]) {
-			c.t.Errorf("AAPL %s levels %v, open orders %v", side, got, resting[side])
+		if msg := bookProblem(b); msg != "" {
+			c.t.Errorf("%s book: %s", symbol, msg)
+		}
+	}
+}
+
+// bookProblem reports a book whose levels are out of order or crossed, or ""
+// when it is well formed.
+func bookProblem(b wireBook) string {
+	for i := 1; i < len(b.Bids); i++ {
+		if b.Bids[i].Price >= b.Bids[i-1].Price {
+			return fmt.Sprintf("bids not strictly descending: %+v", b.Bids)
+		}
+	}
+	for i := 1; i < len(b.Asks); i++ {
+		if b.Asks[i].Price <= b.Asks[i-1].Price {
+			return fmt.Sprintf("asks not strictly ascending: %+v", b.Asks)
 		}
 	}
 	if len(b.Bids) > 0 && len(b.Asks) > 0 && b.Bids[0].Price >= b.Asks[0].Price {
-		c.t.Errorf("crossed book: best bid %d, best ask %d", b.Bids[0].Price, b.Asks[0].Price)
+		return fmt.Sprintf("crossed: best bid %d, best ask %d", b.Bids[0].Price, b.Asks[0].Price)
 	}
+	return ""
+}
+
+// tryGet is get for use off the test goroutine: it returns problems instead
+// of stopping the test.
+func (c client) tryGet(path string, v any) error {
+	resp, err := http.Get(c.url + path)
+	if err != nil {
+		return err
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		return fmt.Errorf("GET %s: status %d", path, resp.StatusCode)
+	}
+	return json.NewDecoder(resp.Body).Decode(v)
+}
+
+// snapshotProblem checks what every single /accounts response must show,
+// even one taken while submissions are in flight: totals conserved across
+// both accounts and available = total - reserved >= 0 for every balance.
+func snapshotProblem(accounts []wireAccount) string {
+	var cash int64
+	shares := map[string]int64{}
+	check := func(what string, b wireBalance) string {
+		if b.Reserved < 0 || b.Available < 0 || b.Available != b.Total-b.Reserved {
+			return fmt.Sprintf("%s = %+v", what, b)
+		}
+		return ""
+	}
+	for _, a := range accounts {
+		cash += a.Cash.Total
+		if msg := check(a.UserID+" cash", a.Cash); msg != "" {
+			return msg
+		}
+		for _, p := range a.Positions {
+			shares[p.Symbol] += p.Total
+			if msg := check(a.UserID+" "+p.Symbol, p.wireBalance); msg != "" {
+				return msg
+			}
+		}
+	}
+	if cash != 20_000_000 || shares["AAPL"] != 200 || shares["MSFT"] != 200 {
+		return fmt.Sprintf("not conserved: cash %d, shares %v", cash, shares)
+	}
+	return ""
 }
 
 // TestTwoAccountTradingScenario walks one exchange through the Sprint 2
@@ -352,15 +419,19 @@ func TestTwoAccountTradingScenario(t *testing.T) {
 
 	// Rejections change nothing: risk, validation, and decoding.
 	snapshot := exchangeState(t, c.url)
-	for _, s := range []submitted{
-		c.submit("bob", "AAPL", "BUY", 100_000, 1_000),    // INSUFFICIENT_CASH
-		c.submit("alice", "MSFT", "SELL", 42_000, 101),    // INSUFFICIENT_SHARES
-		c.submit("alice", "AAPL", "SELL", 0, 1),           // INVALID_PRICE
-		c.submit("carol", "AAPL", "SELL", 19_000, 1),      // UNKNOWN_USER
-		c.submit("bob", "AAPL", "BUY", 19_000, 1_000_001), // INVALID_QUANTITY
+	for _, r := range []struct {
+		got    submitted
+		status int
+		code   string
+	}{
+		{c.submit("bob", "AAPL", "BUY", 100_000, 1_000), http.StatusUnprocessableEntity, "INSUFFICIENT_CASH"},
+		{c.submit("alice", "MSFT", "SELL", 42_000, 101), http.StatusUnprocessableEntity, "INSUFFICIENT_SHARES"},
+		{c.submit("alice", "AAPL", "SELL", 0, 1), http.StatusUnprocessableEntity, "INVALID_PRICE"},
+		{c.submit("carol", "AAPL", "SELL", 19_000, 1), http.StatusNotFound, "UNKNOWN_USER"},
+		{c.submit("bob", "AAPL", "BUY", 19_000, 1_000_001), http.StatusUnprocessableEntity, "INVALID_QUANTITY"},
 	} {
-		if s.Status == http.StatusCreated || s.Error.Code == "" {
-			t.Errorf("rejection = %+v", s)
+		if r.got.Status != r.status || r.got.Error.Code != r.code {
+			t.Errorf("rejection = %d %s, want %d %s", r.got.Status, r.got.Error.Code, r.status, r.code)
 		}
 	}
 	if resp, _ := postJSON(t, c.url, `{"userId":"bob"`); resp.StatusCode != http.StatusBadRequest {
@@ -369,6 +440,30 @@ func TestTwoAccountTradingScenario(t *testing.T) {
 	if got := exchangeState(t, c.url); fmt.Sprint(got) != fmt.Sprint(snapshot) {
 		t.Errorf("rejections changed the exchange")
 	}
+	// Both parties' canonical orders, newest first, after every step above.
+	order := func(n int64, user, side string, price, qty, remaining int64, status string) wireOrder {
+		return wireOrder{ID: fmt.Sprintf("ord-%d", n), UserID: user, Symbol: "AAPL", Side: side, Price: price,
+			Quantity: qty, Remaining: remaining, Status: status, Sequence: n}
+	}
+	wantOrders := map[string][]wireOrder{
+		"alice": {
+			order(6, "alice", "SELL", 18800, 5, 0, "FILLED"),
+			order(2, "alice", "SELL", 19200, 5, 0, "FILLED"),
+			order(1, "alice", "SELL", 19000, 10, 0, "FILLED"),
+		},
+		"bob": {
+			order(7, "bob", "SELL", 18800, 4, 0, "FILLED"),
+			order(5, "bob", "BUY", 19200, 8, 0, "FILLED"),
+			order(4, "bob", "BUY", 19100, 10, 0, "FILLED"),
+			order(3, "bob", "BUY", 18800, 20, 14, "PARTIALLY_FILLED"),
+		},
+	}
+	for user, want := range wantOrders {
+		if got := c.orders(user); !slices.Equal(got, want) {
+			t.Errorf("%s orders:\n got %+v\nwant %+v", user, got, want)
+		}
+	}
+
 	// Execution history: newest first, gap-free sequences, both parties.
 	ex := c.executions("AAPL")
 	if len(ex) != 5 {
@@ -507,6 +602,47 @@ func TestConcurrentFIFOFollowsAcceptanceSequence(t *testing.T) {
 // reservation, order, execution, and book level consistent.
 func TestConcurrentCrossingOrdersLoseNoFills(t *testing.T) {
 	c := newClient(t, fixedClock())
+
+	// Readers run while the writers submit. Each GET is one snapshot taken
+	// between submissions, so every response must be coherent on its own.
+	done := make(chan struct{})
+	var readers sync.WaitGroup
+	var reads atomic.Int64
+	for r := range 2 {
+		readers.Add(1)
+		go func() {
+			defer readers.Done()
+			for {
+				select {
+				case <-done:
+					return
+				default:
+				}
+				var msg string
+				if r == 0 {
+					var body struct{ Accounts []wireAccount }
+					if err := c.tryGet("/api/v1/accounts", &body); err != nil {
+						t.Error(err)
+						return
+					}
+					msg = snapshotProblem(body.Accounts)
+				} else {
+					var b wireBook
+					if err := c.tryGet("/api/v1/orderbook?symbol=AAPL&depth=100", &b); err != nil {
+						t.Error(err)
+						return
+					}
+					msg = bookProblem(b)
+				}
+				if msg != "" {
+					t.Errorf("read during submissions: %s", msg)
+					return
+				}
+				reads.Add(1)
+			}
+		}()
+	}
+
 	var wg sync.WaitGroup
 	for w := range 8 {
 		wg.Add(1)
@@ -523,6 +659,11 @@ func TestConcurrentCrossingOrdersLoseNoFills(t *testing.T) {
 		}()
 	}
 	wg.Wait()
+	close(done)
+	readers.Wait()
+	if reads.Load() == 0 {
+		t.Fatal("no reads completed during the submissions")
+	}
 	if len(c.executions("AAPL")) == 0 {
 		t.Fatal("no orders crossed; the test exercises nothing")
 	}

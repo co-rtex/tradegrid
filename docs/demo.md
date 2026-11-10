@@ -227,6 +227,20 @@ always ends on the account selected last and never shows the previous
 account's numbers, because each switch clears the view and late responses for
 the old account are dropped.
 
+### Screenshots
+
+Captured from the running application after steps 1–3 and 6 (state created
+through the real REST API, headless Chromium, 2026-11-09). They show live
+server values, not mocks:
+
+- [Bob's trading desk at 1280 px](../frontend/docs/trading-desk-bob.png):
+  $2,857.50 reserved for the 15-share remainder, the $190.50 bid, two trades at
+  $190.00, and Bob's three orders.
+- [Alice's portfolio at 1280 px](../frontend/docs/portfolio-alice.png):
+  $161,050.00 equity and +$50.00 realized P&L.
+- [Bob's portfolio at 375 px](../frontend/docs/portfolio-bob-phone.png):
+  $160,950.00 equity and −$50.00 unrealized P&L in the one-column phone layout.
+
 ## 5–7 Minute Workshop Demo Script
 
 | Time | Presenter says | Operator does |

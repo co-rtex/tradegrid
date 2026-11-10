@@ -118,6 +118,7 @@ Run against the integrated backend binary and Vite in headless Chromium
 | --- | --- | --- |
 | A desk test read balances as soon as the orders heading appeared; balances load independently, so it failed under parallel load | `TradingDesk.test.tsx` (#44) | Tests wait until every panel's first read finishes |
 | The stream ping test could fail under load: an expired client read closes the socket and may report "closed connection" instead of a deadline | `stream_handler_test.go` (#73) | A test hook after each answered ping; the test waits for pongs, then checks an event still arrives |
+| At 1024–1400 px the desk's two-column grid squeezed the order book and the recent-trades table into internal scroll areas, hiding the Orders and Quantity columns (seen in a screenshot) | `TradingDesk.css` (#44) | Side by side only from 75rem with a 22rem form column; full-width panels below |
 | A missed pong made the server wait up to 5 s for a close handshake that an unresponsive peer never answers | `stream_handler.go` (#73) | The connection is dropped at once after a missed pong |
 
 No open defects are known in the tested candidate.
@@ -131,6 +132,7 @@ No open defects are known in the tested candidate.
 | Chromium 156 (Playwright), macOS | 1280 × 800 | Same | Same | Same | Pass (automated) |
 | Chromium 156 (Playwright), macOS | 1280 × 720 | Tab through the desk | Demo account, Market, Refresh, Symbol, Quantity, Limit price, and Submit are all reachable, each with a visible focus style | All reached; none without a focus outline | Pass (automated) |
 | Chromium 156 (Playwright), macOS | 1280 × 720 | Two-window trading and portfolio scenarios | Exact values in [demo.md](demo.md) | Matched | Pass (automated) |
+| Chromium 156 (Playwright), macOS | 375 × 812 | Look at the top navigation | All items visible | "Markets" is cut off at the right edge; the bar scrolls horizontally (existing #10 component). Minor, not release-blocking | Finding (minor) |
 | Firefox | any | Full runbook | Same as Chromium | Not run: Firefox for Playwright is not installed on the test machine | **Not covered** |
 | Safari / WebKit | any | Full runbook | Same as Chromium | Not run: WebKit for Playwright is not installed; desktop Safari not checked | **Not covered** |
 | Physical phone | 375-class | Full runbook | Usable one-column layout | Not run | **Not covered** |

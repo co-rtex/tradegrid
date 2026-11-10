@@ -6,14 +6,17 @@ import TopNavigation, { type NavigationItem } from './components/TopNavigation'
 import TradingDesk from './components/TradingDesk'
 import { useDemoAccounts, useSelectedAccount } from './hooks/useDemoAccounts'
 import PortfolioPage from './pages/PortfolioPage'
+import type { WebSocketLike } from './lib/realtime'
 import './App.css'
 
 export interface AppProps {
   /** REST client; tests pass a stub. */
   client?: TradeGridClient
+  /** Real-time stream overrides for tests; the app uses the page's own host. */
+  realtime?: { url?: string; createSocket?: (url: string) => WebSocketLike }
 }
 
-function App({ client = tradeGridClient }: AppProps) {
+function App({ client = tradeGridClient, realtime }: AppProps) {
   const [activeItem, setActiveItem] = useState<NavigationItem>('Dashboard')
   // Available cash of the selected account, reported by the view showing it.
   const [balance, setBalance] = useState<string | undefined>()
@@ -64,6 +67,7 @@ function App({ client = tradeGridClient }: AppProps) {
         userId={userId}
         onUserChange={setUserId}
         onBalanceChange={setBalance}
+        realtime={realtime}
       />
     )
   } else {

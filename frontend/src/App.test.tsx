@@ -5,6 +5,9 @@ import seed from '../../docs/fixtures/00-seed.json'
 import noFill from '../../docs/fixtures/01-no-fill.json'
 import App from './App'
 import { SELECTED_ACCOUNT_KEY } from './hooks/useDemoAccounts'
+import { mockSocketFactory } from './test/mockWebSocket'
+
+let sockets = mockSocketFactory()
 
 // The app reads the API through the global fetch; answer as a server that
 // already holds Alice's resting SELL, so her available cash is unchanged and
@@ -48,6 +51,7 @@ function serve(overrides: Record<string, () => Response> = {}) {
 }
 
 beforeEach(() => {
+  sockets = mockSocketFactory()
   window.sessionStorage.clear()
   serve()
 })
@@ -59,7 +63,7 @@ afterEach(() => {
 describe('App', () => {
   it('starts on Dashboard and follows navigation clicks', async () => {
     const user = userEvent.setup()
-    render(<App />)
+    render(<App realtime={{ createSocket: sockets.create }} />)
     const nav = screen.getByRole('navigation', { name: 'Primary navigation' })
 
     expect(screen.getByRole('heading', { level: 1 })).toHaveTextContent('Dashboard')
@@ -75,7 +79,7 @@ describe('App', () => {
   })
 
   it('shows the selected demo account’s server cash in the navigation balance', async () => {
-    render(<App />)
+    render(<App realtime={{ createSocket: sockets.create }} />)
     const balance = screen.getByText('Balance').parentElement!
     expect(balance).toHaveTextContent('—')
     expect(await within(balance).findByText('$100,000.00 available')).toBeInTheDocument()
@@ -83,7 +87,7 @@ describe('App', () => {
 
   it('shows the same selected account’s server portfolio on the Portfolio view', async () => {
     const user = userEvent.setup()
-    render(<App />)
+    render(<App realtime={{ createSocket: sockets.create }} />)
     await user.selectOptions(await screen.findByLabelText('Demo account'), 'bob')
     await screen.findByRole('heading', { name: 'Orders for Bob (demo)' })
 
@@ -99,7 +103,7 @@ describe('App', () => {
 
   it('loads the demo accounts once for the whole app and keeps the selection across views', async () => {
     const user = userEvent.setup()
-    render(<App />)
+    render(<App realtime={{ createSocket: sockets.create }} />)
     await user.selectOptions(await screen.findByLabelText('Demo account'), 'bob')
     expect(await screen.findByRole('heading', { name: 'Orders for Bob (demo)' })).toBeInTheDocument()
     expect(window.sessionStorage.getItem(SELECTED_ACCOUNT_KEY)).toBe('bob')
@@ -112,12 +116,12 @@ describe('App', () => {
 
   it('restores this tab’s account after a reload and ignores an unknown remembered account', async () => {
     window.sessionStorage.setItem(SELECTED_ACCOUNT_KEY, 'bob')
-    const { unmount } = render(<App />)
+    const { unmount } = render(<App realtime={{ createSocket: sockets.create }} />)
     expect(await screen.findByRole('heading', { name: 'Orders for Bob (demo)' })).toBeInTheDocument()
     unmount()
 
     window.sessionStorage.setItem(SELECTED_ACCOUNT_KEY, 'carol')
-    render(<App />)
+    render(<App realtime={{ createSocket: sockets.create }} />)
     expect(await screen.findByRole('heading', { name: 'Orders for Alice (demo)' })).toBeInTheDocument()
     expect(screen.getByLabelText('Demo account')).toHaveValue('alice')
   })
@@ -129,7 +133,7 @@ describe('App', () => {
         fail ? new Response('', { status: 502 }) : new Response(JSON.stringify(responses['/api/v1/accounts'])),
     })
     const user = userEvent.setup()
-    render(<App />)
+    render(<App realtime={{ createSocket: sockets.create }} />)
 
     const alert = await screen.findByRole('alert')
     expect(alert).toHaveTextContent('Could not load the demo accounts: the server is unavailable (HTTP 502).')
@@ -143,7 +147,7 @@ describe('App', () => {
 
   it('shows an empty state when the server lists no demo accounts', async () => {
     serve({ '/api/v1/accounts': () => new Response(JSON.stringify({ accounts: [] })) })
-    render(<App />)
+    render(<App realtime={{ createSocket: sockets.create }} />)
     expect(
       await screen.findByText('The server returned no demo accounts, so there is nothing to show.'),
     ).toBeInTheDocument()

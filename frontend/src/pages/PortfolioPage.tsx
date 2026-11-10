@@ -1,15 +1,18 @@
 import { useEffect, useEffectEvent, useId } from 'react'
 import { isServerUnavailable, tradeGridClient, type PortfolioDto, type TradeGridClient } from '../api/client'
 import { describeLoadError } from '../api/describe'
+import ConnectionStatus from '../components/ConnectionStatus'
 import DemoAccountSelect from '../components/DemoAccountSelect'
 import PortfolioSummary from '../components/PortfolioSummary'
 import PositionsTable from '../components/PositionsTable'
 import ProfitLossBreakdown from '../components/ProfitLossBreakdown'
 import ServerHint from '../components/ServerHint'
 import type { DemoAccount } from '../hooks/useDemoAccounts'
+import { useRealtime, type RefreshRequest } from '../hooks/useRealtime'
 import { useSnapshot } from '../hooks/useSnapshot'
 import { formatUsdCents } from '../lib/money'
 import { combinedPnl } from '../lib/portfolio'
+import type { WebSocketLike } from '../lib/realtime'
 import './PortfolioPage.css'
 
 export interface PortfolioPageProps {
@@ -22,6 +25,8 @@ export interface PortfolioPageProps {
   onUserChange: (userId: string) => void
   /** Called with the selected account's available cash for the navigation bar. */
   onBalanceChange?: (balance: string | undefined) => void
+  /** Stream overrides for tests; the app uses the page's own host. */
+  realtime?: { url?: string; createSocket?: (url: string) => WebSocketLike }
 }
 
 function usd(cents: number): string {
@@ -43,6 +48,7 @@ export default function PortfolioPage({
   userId,
   onUserChange,
   onBalanceChange,
+  realtime,
 }: PortfolioPageProps) {
   const titleId = useId()
   const cashTitleId = useId()
@@ -60,6 +66,28 @@ export default function PortfolioPage({
     loadSelected(userId)
   }, [userId])
   useEffect(() => cancelPortfolio, [cancelPortfolio])
+
+  /**
+   * Live refresh (#96, docs/realtime.md). The portfolio changes only when a
+   * committed submission involves this account, so an exchange.changed
+   * re-reads it only when affectedUserIds contains the selected account.
+   * hello, a reconnect, or a missed sequence re-read it; after a server
+   * restart the old values are cleared first. A notification is never used
+   * as data, and a selection change already loads above.
+   */
+  function refreshFromStream({ views, reason, selection }: RefreshRequest) {
+    if (reason === 'selection-changed') return
+    if (reason === 'changed' && !views.includes('portfolio')) return
+    void load(selection.userId, reason !== 'server-restarted')
+  }
+
+  // The portfolio has no symbol selection, so symbol-only changes are ignored.
+  const stream = useRealtime({
+    selection: { userId, symbol: '' },
+    onRefresh: refreshFromStream,
+    url: realtime?.url,
+    createSocket: realtime?.createSocket,
+  })
 
   // A response is only ever for the account that was requested (the client
   // checks userId), and a stale one never reaches state; this guards the
@@ -81,7 +109,8 @@ export default function PortfolioPage({
           <h2 id={titleId}>{accountName} portfolio</h2>
           <p className="portfolio-page-simulation">
             <strong>Simulated demo account.</strong> Positions are valued at fixed, simulated reference prices, not
-            live market prices. Every value is calculated by the server and resets when it restarts.
+            live market prices. Every value is calculated by the server, updates after each trade involving this
+            account, and resets when the server restarts.
           </p>
         </div>
         <div className="portfolio-page-controls">
@@ -93,6 +122,17 @@ export default function PortfolioPage({
         <p className="portfolio-page-refreshing" role="status">
           {portfolio.loading && data !== null ? 'Refreshing from the server…' : ''}
         </p>
+        <div className="portfolio-page-live">
+          <ConnectionStatus status={stream.state} />
+          {(stream.state === 'disconnected' || stream.state === 'error') && (
+            <div className="portfolio-page-live-actions">
+              <p>Press Refresh to read the latest values, or reconnect to resume live updates.</p>
+              <button type="button" className="portfolio-page-refresh" onClick={stream.retry}>
+                Reconnect live updates
+              </button>
+            </div>
+          )}
+        </div>
       </header>
 
       {error !== null && (

@@ -118,3 +118,21 @@
   color: var(--text-muted);
   font-size: 12px;
 }
+
+.portfolio-page-live {
+  display: grid;
+  gap: 8px;
+}
+
+.portfolio-page-live-actions {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px 16px;
+}
+
+.portfolio-page-live-actions p {
+  margin: 0;
+  color: var(--text-secondary);
+  font-size: 14px;
+}

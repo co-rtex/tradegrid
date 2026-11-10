@@ -78,6 +78,7 @@ function App({ client = tradeGridClient, realtime }: AppProps) {
         userId={userId}
         onUserChange={setUserId}
         onBalanceChange={setBalance}
+        realtime={realtime}
       />
     )
   }

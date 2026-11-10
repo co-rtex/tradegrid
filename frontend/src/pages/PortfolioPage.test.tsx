@@ -1,9 +1,10 @@
-import { render, screen, waitFor, within } from '@testing-library/react'
+import { act, cleanup, render, screen, waitFor, within } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 import { useState } from 'react'
-import { describe, expect, it, vi } from 'vitest'
+import { beforeEach, describe, expect, it, vi } from 'vitest'
 import { ApiError, type PortfolioDto, type TradeGridClient } from '../api/client'
 import type { DemoAccount } from '../hooks/useDemoAccounts'
+import { changed, heartbeat, hello, mockSocketFactory } from '../test/mockWebSocket'
 import PortfolioPage from './PortfolioPage'
 
 // ---------------------------------------------------------------------------
@@ -87,9 +88,25 @@ function deferred<T>() {
   return { promise, resolve, reject }
 }
 
+/** Sockets opened in the current test; the test plays the server. */
+let sockets = mockSocketFactory()
+beforeEach(() => {
+  sockets = mockSocketFactory()
+})
+
 /** The page as App mounts it: the account selection lives one level up. */
-function Page({ client, onBalanceChange }: { client: TradeGridClient; onBalanceChange?: (b: string | undefined) => void }) {
-  const [userId, setUserId] = useState('alice')
+function Page({
+  client,
+  onBalanceChange,
+  initialUser = 'alice',
+  factory = sockets,
+}: {
+  client: TradeGridClient
+  onBalanceChange?: (b: string | undefined) => void
+  initialUser?: string
+  factory?: ReturnType<typeof mockSocketFactory>
+}) {
+  const [userId, setUserId] = useState(initialUser)
   return (
     <PortfolioPage
       client={client}
@@ -97,6 +114,7 @@ function Page({ client, onBalanceChange }: { client: TradeGridClient; onBalanceC
       userId={userId}
       onUserChange={setUserId}
       onBalanceChange={onBalanceChange}
+      realtime={{ url: 'ws://test/api/v1/stream', createSocket: factory.create }}
     />
   )
 }
@@ -238,5 +256,141 @@ describe('PortfolioPage', () => {
     // A closed position keeps its realized P&L.
     expect(pnl().getByText('Realized P&L').nextElementSibling).toHaveTextContent('$0.00 No change')
     expect(positionRow('AAPL')).toHaveTextContent('0 shares')
+  })
+})
+
+// ---------------------------------------------------------------------------
+// Live refresh (#96)
+
+describe('PortfolioPage live refresh', () => {
+  const server = (fn: () => void) => act(fn)
+
+  async function renderLive(client: ReturnType<typeof fakeClient>) {
+    const user = userEvent.setup()
+    render(<Page client={client} />)
+    await screen.findByRole('region', { name: 'Portfolio summary' })
+    server(() => sockets.latest().send(hello(0)))
+    // hello re-reads the portfolio once.
+    await waitFor(() => expect(client.getPortfolio).toHaveBeenCalledTimes(2))
+    return user
+  }
+
+  it('re-reads the portfolio when a committed trade involves the selected account', async () => {
+    const byUser = { alice: portfolio('alice'), bob: portfolio('bob') }
+    const client = fakeClient(byUser)
+    await renderLive(client)
+    expect(sockets.sockets).toHaveLength(1)
+    expect(screen.getByText('Live updates:').querySelector('strong')).toHaveTextContent('Connected')
+
+    byUser.alice = aliceAfterExample1
+    server(() => sockets.latest().send(changed(1, { userId: 'bob', affectedUserIds: ['alice', 'bob'] })))
+    expect(await screen.findByText('$160,950.00')).toBeInTheDocument()
+    expect(client.getPortfolio).toHaveBeenLastCalledWith('alice', expect.anything())
+  })
+
+  it('ignores trades that do not involve the selected account, whatever their symbol', async () => {
+    const client = fakeClient()
+    await renderLive(client)
+    server(() => sockets.latest().send(changed(1, { symbol: 'AAPL', userId: 'bob', affectedUserIds: ['bob'] })))
+    server(() => sockets.latest().send(changed(2, { symbol: 'MSFT', userId: 'bob', affectedUserIds: ['bob'] })))
+    // A later relevant change proves the earlier ones were handled and ignored.
+    server(() => sockets.latest().send(changed(3, { userId: 'alice', affectedUserIds: ['alice'] })))
+    await waitFor(() => expect(client.getPortfolio).toHaveBeenCalledTimes(3))
+  })
+
+  it('updates both counterparties’ portfolios in separate windows after one cross-account fill', async () => {
+    const byUser = { alice: portfolio('alice'), bob: portfolio('bob') }
+    const client = fakeClient(byUser)
+    const aliceWindow = mockSocketFactory()
+    const bobWindow = mockSocketFactory()
+    render(
+      <>
+        <section aria-label="Alice window">
+          <Page client={client} initialUser="alice" factory={aliceWindow} />
+        </section>
+        <section aria-label="Bob window">
+          <Page client={client} initialUser="bob" factory={bobWindow} />
+        </section>
+      </>,
+    )
+    const alice = within(screen.getByRole('region', { name: 'Alice window' }))
+    const bob = within(screen.getByRole('region', { name: 'Bob window' }))
+    await alice.findAllByText('$161,000.00')
+    await bob.findAllByText('$161,000.00')
+    server(() => {
+      aliceWindow.latest().send(hello(0))
+      bobWindow.latest().send(hello(0))
+    })
+
+    byUser.alice = aliceAfterExample1
+    byUser.bob = bobAfterExample1
+    const fill = changed(1, { userId: 'bob', executionCount: 1, affectedUserIds: ['alice', 'bob'] })
+    server(() => {
+      aliceWindow.latest().send(fill)
+      bobWindow.latest().send(fill)
+    })
+    expect(await alice.findByText('$160,950.00')).toBeInTheDocument()
+    expect(await bob.findByText('$161,050.00')).toBeInTheDocument()
+  })
+
+  it('re-reads after a reconnect and after a missed event, and clears values from a restarted server', async () => {
+    const client = fakeClient({ alice: aliceAfterExample1 })
+    await renderLive(client)
+
+    server(() => sockets.latest().send(heartbeat(4)))
+    await waitFor(() => expect(client.getPortfolio).toHaveBeenCalledTimes(3))
+
+    server(() => sockets.latest().serverClose(1001))
+    expect(screen.getByText('Live updates:').querySelector('strong')).toHaveTextContent('Reconnecting…')
+    await waitFor(() => expect(sockets.sockets).toHaveLength(2), { timeout: 2000 })
+    const fresh = deferred<PortfolioDto>()
+    client.getPortfolio.mockImplementationOnce(() => fresh.promise)
+    server(() => sockets.latest().send(hello(0))) // lower than 4: the server restarted
+    await waitFor(() => expect(screen.queryByText('$160,950.00')).not.toBeInTheDocument())
+    expect(screen.getByText('Loading the portfolio…')).toBeInTheDocument()
+    await act(async () => fresh.resolve(portfolio('alice')))
+    expect(await screen.findByText('$161,000.00')).toBeInTheDocument()
+  })
+
+  it('drops a live read for the previous account after a rapid switch', async () => {
+    const client = fakeClient({ alice: aliceAfterExample1, bob: bobAfterExample1 })
+    const user = await renderLive(client)
+
+    const lateAlice = deferred<PortfolioDto>()
+    client.getPortfolio.mockImplementationOnce(() => lateAlice.promise)
+    server(() => sockets.latest().send(changed(1, { affectedUserIds: ['alice'] })))
+    await waitFor(() => expect(client.getPortfolio).toHaveBeenCalledTimes(3))
+
+    await user.selectOptions(screen.getByLabelText('Demo account'), 'bob')
+    expect(await screen.findByText('$161,050.00')).toBeInTheDocument()
+    await act(async () => lateAlice.resolve(aliceAfterExample1))
+    expect(screen.getByRole('heading', { name: 'Bob (demo) portfolio' })).toBeInTheDocument()
+    expect(screen.queryByText('$160,950.00')).not.toBeInTheDocument()
+  })
+
+  it('keeps manual Refresh working while live updates are stopped, without implying an order failed', async () => {
+    const client = fakeClient()
+    const user = userEvent.setup()
+    render(<Page client={client} />)
+    await screen.findByText('$161,000.00')
+    server(() => sockets.latest().send('not json'))
+    expect(screen.getByText('Live updates:').querySelector('strong')).toHaveTextContent('Connection error')
+    expect(screen.getByText(/This does not mean an order failed/)).toBeInTheDocument()
+
+    client.getPortfolio.mockResolvedValueOnce(aliceAfterExample1)
+    await user.click(screen.getByRole('button', { name: 'Refresh' }))
+    expect(await screen.findByText('$160,950.00')).toBeInTheDocument()
+
+    await user.click(screen.getByRole('button', { name: 'Reconnect live updates' }))
+    expect(sockets.sockets).toHaveLength(2)
+  })
+
+  it('closes its stream when unmounted', async () => {
+    render(<Page client={fakeClient()} />)
+    await screen.findByText('$161,000.00')
+    const socket = sockets.latest()
+    cleanup()
+    expect(socket.closedByClient).toBe(true)
+    expect(socket.listenerCount()).toBe(0)
   })
 })

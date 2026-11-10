@@ -122,6 +122,15 @@ account clears the view before loading, a late response for the previous
 account is dropped, and the client rejects a response for any account other
 than the one requested. **Refresh** reloads it.
 
+The portfolio also updates live (#96): it opens its own stream connection (the
+desk's closes when you leave the Dashboard, since only one view is mounted) and
+re-reads `GET /api/v1/portfolio` only when an `exchange.changed` notice lists the
+selected account in `affectedUserIds`. `hello`, a reconnect, or a missed
+sequence re-read it; a server restart clears the old values first. A trade
+between Alice and Bob therefore updates both accounts' portfolios in their own
+windows without pressing Refresh. The same **Live updates** indicator,
+**Refresh**, and **Reconnect live updates** fallback appear as on the desk.
+
 Run all commands below from `frontend/` as well.
 
 ## Checks and production build

@@ -128,4 +128,4 @@ From the repository root:
 python3 -m unittest discover -s analytics -v
 ```
 
-The tests use only the standard library `unittest` module. They cover empty input, multiple symbols, partial fills, exact money and rounding, duplicate-counting avoidance, malformed JSON and records, every checked-in fixture, and the command's output and exit codes. CI does not run them yet.
+The tests use only the standard library `unittest` module. They cover empty input, multiple symbols, partial fills, exact money and rounding, duplicate-counting avoidance, malformed JSON and records, every checked-in fixture, and the command's output and exit codes. CI runs them on Python 3.10, the oldest supported version (the `analytics` job in `.github/workflows/ci.yml`).

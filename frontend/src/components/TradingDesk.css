@@ -248,9 +248,16 @@
   max-width: none;
 }
 
-@media (min-width: 64rem) {
+/* Side by side only when the market column can show the book's two sides and
+   the trades table (at least 640px) without clipping them into scroll areas. */
+@media (min-width: 75rem) {
   .trading-desk-grid {
-    grid-template-columns: repeat(2, minmax(0, 1fr));
+    grid-template-columns: 22rem minmax(0, 1fr);
+  }
+
+  /* The form's narrow column fits one field per row. */
+  .trading-desk-entry .order-entry-fields {
+    grid-template-columns: minmax(0, 1fr);
   }
 
   .trading-desk-orders {

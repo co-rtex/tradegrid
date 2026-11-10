@@ -114,7 +114,13 @@ async function renderDesk(client: TradeGridClient) {
   const user = userEvent.setup()
   render(<Desk client={client} onBalanceChange={onBalanceChange} />)
   await screen.findByRole('heading', { name: /^Orders for / })
+  await initialLoadsSettled()
   return { user, onBalanceChange }
+}
+
+/** Every panel's first read has answered (balances, orders, book, and trades load independently). */
+async function initialLoadsSettled() {
+  await waitFor(() => expect(screen.queryByText(/^Loading (account balances|orders|order book|recent trades)/)).toBeNull())
 }
 
 async function placeOrder(
@@ -143,6 +149,7 @@ describe('TradingDesk', () => {
     expect(screen.getByText('Loading tradable symbols…')).toHaveAttribute('role', 'status')
 
     expect(await screen.findByRole('heading', { name: 'Orders for Alice (demo)' })).toBeInTheDocument()
+    await initialLoadsSettled()
     expect(screen.getByLabelText('Demo account')).toHaveValue('alice')
     expect(screen.getByLabelText('Market')).toHaveValue('AAPL')
     expect(screen.getByRole('option', { name: 'MSFT — Microsoft Corporation' })).toBeInTheDocument()

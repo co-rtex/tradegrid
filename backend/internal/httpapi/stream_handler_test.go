@@ -3,7 +3,6 @@ package httpapi
 import (
 	"context"
 	"encoding/json"
-	"errors"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -435,17 +434,34 @@ func TestStreamAllowsTheContractOrigins(t *testing.T) {
 }
 
 func TestStreamPingsKeepAHealthyConnectionOpen(t *testing.T) {
+	pongs := make(chan struct{}, 16)
 	env := newStreamEnv(t, func(c *StreamConfig) {
 		c.PingInterval = 5 * time.Millisecond
-		c.PongTimeout = time.Second
+		c.PongTimeout = 5 * time.Second
+		c.afterPong = func() {
+			select {
+			case pongs <- struct{}{}:
+			default:
+			}
+		}
 	})
 	conn := env.dial(nil)
-	read(t, conn) // the client library answers pings while reading
-	ctx, cancel := context.WithTimeout(context.Background(), 200*time.Millisecond)
-	defer cancel()
-	_, _, err := conn.Read(ctx)
-	if !errors.Is(err, context.DeadlineExceeded) {
-		t.Fatalf("connection ended during pings: %v", err)
+	read(t, conn)
+
+	// The client library answers pings while a Read is in progress.
+	next := make(chan streamMsg, 1)
+	go func() { next <- read(t, conn) }()
+	for range 3 {
+		select {
+		case <-pongs:
+		case <-time.After(5 * time.Second):
+			t.Fatal("no pong within 5 s")
+		}
+	}
+	// After several ping rounds the connection still delivers events.
+	env.submit("alice", "AAPL", "SELL", 19000, 1)
+	if m := <-next; m.Type != "exchange.changed" || m.AsOfSequence != 1 {
+		t.Errorf("after pings got %+v", m)
 	}
 }
 

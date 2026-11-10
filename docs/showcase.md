@@ -94,8 +94,8 @@ Open contributor PRs at the time of writing, to recognize once merged:
 #81 and #82 (Bill-Yunke-Zhang: stream contract and event hub), #85
 (Ademark1: limit-order form), #86 (hellotheretm: read endpoints).
 
-The final-sprint integration PRs (#36, #39, #44, #46, #65, #68, #69, #70, #73,
-#76, #77, #96, #97, and this documentation) were opened from the co-rtex
+The final-sprint integration PRs #99–#111 (for issues #36, #39, #44, #46, #65,
+#68, #69, #70, #73, #76, #77, #96, #97) and the documentation PR were opened from the co-rtex
 account with AI assistance (Claude Code), as their descriptions state.
 
 ## Future Roadmap (not unfinished MVP promises)
@@ -115,15 +115,16 @@ Contributor PRs stay with their owners; nobody else pushes to them.
 3. **#81** (#71 contract) and **#82** (#72 hub). #82 conflicts with `main` in
    `backend/internal/exchange/service.go` only because #80 was squash-merged;
    its owner resolves it.
-4. Independent, any time: **#39** schema and seeds, **#76** analytics, **#65**
-   valuation, **#68** cost-basis settlement.
-5. **#36** order submission (after #86), then **#46** integration tests.
-6. **#69** portfolio endpoint (after #86, #65, #68).
-7. **#73** stream endpoint (after #86 and #82; rebase onto #36/#69 for a
-   two-line router and README conflict).
-8. **#44** trading desk (after #85), **#70** portfolio page, **#77** live desk,
-   **#96** live portfolio.
-9. **#97** smoke tests, then the documentation PR.
+4. Independent, any time: **#99** (#39 schema and seeds), **#100** (#76
+   analytics), **#101** (#65 valuation), **#102** (#68 cost-basis settlement).
+5. **#103** (#36 order submission, after #86), then **#104** (#46 integration
+   tests).
+6. **#105** (#69 portfolio endpoint, after #86, #101, #102).
+7. **#106** (#73 stream endpoint, after #86 and #82; rebase onto #103/#105 for
+   a two-line router and README conflict).
+8. **#107** (#44 trading desk, after #85), **#108** (#70 portfolio page),
+   **#109** (#77 live desk), **#110** (#96 live portfolio).
+9. **#111** (#97 smoke tests), then the documentation PR.
 
 After each merge, rebase the next PR onto `main` and rerun CI.
 

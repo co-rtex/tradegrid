@@ -11,7 +11,7 @@ coordination and sign-off.
 It separates four states that must not be confused:
 
 - **Implemented**: code exists on a branch.
-- **PR open**: the code is up for review.
+- **PR open**: the code is up for review. Every row below is in this state.
 - **Merged**: the code is on `main`.
 - **Verified**: a recorded check passed on a named revision.
 
@@ -39,23 +39,23 @@ they and the stacked PRs merge.
 
 | Issue | What | Implemented on | PR | Merged | Automated verification |
 | --- | --- | --- | --- | --- | --- |
-| #36 | `POST /api/v1/orders` | `final/36-order-submission` (stacked on #86) | see PR list | No | httptest suite, race |
+| #36 | `POST /api/v1/orders` | `final/36-order-submission` (stacked on #86) | #103 | No | httptest suite, race |
 | #37 | Read endpoints | contributor PR #86 | #86 | No | its own tests; used by every check below |
 | #41 | Limit-order form | contributor PR #85 | #85 | No | its own tests; used by the desk and e2e |
-| #44 | Trading desk + app-level account selection | `final/44-trading-desk` (includes #85) | see PR list | No | component tests, e2e |
-| #46 | Two-account HTTP integration, atomicity, concurrency, CI race | `final/46-trading-integration-tests` | see PR list | No | httptest suite, race ×3 |
-| #65 | Pure portfolio valuation | `final/65-portfolio-valuation` | see PR list | No | unit tests |
-| #68 | Cost basis in atomic settlement | `final/68-cost-basis-settlement` | see PR list | No | unit, worked examples, invariants, race |
-| #69 | `GET /api/v1/portfolio` | `final/69-portfolio-endpoint` (stacked on #86, #65, #68) | see PR list | No | httptest suite |
-| #70 | Portfolio page | `final/70-portfolio-page` | see PR list | No | component tests, e2e |
+| #44 | Trading desk + app-level account selection | `final/44-trading-desk` (includes #85) | #107 | No | component tests, e2e |
+| #46 | Two-account HTTP integration, atomicity, concurrency, CI race | `final/46-trading-integration-tests` | #104 | No | httptest suite, race ×3 |
+| #65 | Pure portfolio valuation | `final/65-portfolio-valuation` | #101 | No | unit tests |
+| #68 | Cost basis in atomic settlement | `final/68-cost-basis-settlement` | #102 | No | unit, worked examples, invariants, race |
+| #69 | `GET /api/v1/portfolio` | `final/69-portfolio-endpoint` (stacked on #86, #65, #68) | #105 | No | httptest suite |
+| #70 | Portfolio page | `final/70-portfolio-page` | #108 | No | component tests, e2e |
 | #71 | Stream contract | contributor PR #81 | #81 | No | — (docs) |
 | #72 | Bounded event hub | contributor PR #82 | #82 | No | its own tests, race |
-| #73 | `GET /api/v1/stream` | `final/73-websocket-stream` (stacked on #86, #82) | see PR list | No | WebSocket integration tests, race ×10 |
-| #77 | Live trading-desk refresh | `final/77-live-trading-desk` | see PR list | No | component tests, e2e |
-| #96 | Live portfolio refresh | `final/96-live-portfolio` | see PR list | No | component tests, e2e |
-| #39 | PostgreSQL schema and seeds | `final/39-trading-schema` | see PR list | No | `test-schema` on Docker PostgreSQL 18.6 |
-| #76 | Offline trade-activity report | `final/76-trade-activity-report` | see PR list | No | 50 unittest cases on Python 3.10 and 3.14 |
-| #97 | Browser smoke tests | `final/97-e2e-smoke` | see PR list | No | 8 Playwright tests, Chromium |
+| #73 | `GET /api/v1/stream` | `final/73-websocket-stream` (stacked on #86, #82) | #106 | No | WebSocket integration tests, race ×10 |
+| #77 | Live trading-desk refresh | `final/77-live-trading-desk` | #109 | No | component tests, e2e |
+| #96 | Live portfolio refresh | `final/96-live-portfolio` | #110 | No | component tests, e2e |
+| #39 | PostgreSQL schema and seeds | `final/39-trading-schema` | #99 | No | `test-schema` on Docker PostgreSQL 18.6 |
+| #76 | Offline trade-activity report | `final/76-trade-activity-report` | #100 | No | 50 unittest cases on Python 3.10 and 3.14 |
+| #97 | Browser smoke tests | `final/97-e2e-smoke` | #111 | No | 8 Playwright tests, Chromium |
 
 Already merged and used as-is: #35, #42 (PR #91), #43, #62, #63, #64, #66, #67,
 #74, #75.

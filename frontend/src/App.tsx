@@ -1,22 +1,94 @@
 import { useState } from 'react'
-import TopNavigation, { type NavigationItem } from './components/TopNavigation'
-import './App.css'
+import { isServerUnavailable, tradeGridClient, type TradeGridClient } from './api/client'
+import { describeLoadError } from './api/describe'
 import PortfolioSummary from './components/PortfolioSummary'
+import ServerHint from './components/ServerHint'
+import TopNavigation, { type NavigationItem } from './components/TopNavigation'
+import TradingDesk from './components/TradingDesk'
+import { useDemoAccounts, useSelectedAccount } from './hooks/useDemoAccounts'
+import './App.css'
 
-function App() {
+export interface AppProps {
+  /** REST client; tests pass a stub. */
+  client?: TradeGridClient
+}
+
+function App({ client = tradeGridClient }: AppProps) {
   const [activeItem, setActiveItem] = useState<NavigationItem>('Dashboard')
+  // Available cash of the selected account, reported by the view showing it.
+  const [balance, setBalance] = useState<string | undefined>()
+  // One account selection for the whole app: every view that shows account
+  // data receives it and renders the same selector bound to it.
+  const [directory, reloadDirectory] = useDemoAccounts(client)
+  const accounts = directory.status === 'ready' ? directory.accounts : null
+  const [userId, setUserId] = useSelectedAccount(accounts)
+
+  function navigate(item: NavigationItem) {
+    // The next view reports its own balance; never show the previous one's.
+    if (item !== activeItem) setBalance(undefined)
+    setActiveItem(item)
+  }
+
+  let view
+  if (activeItem === 'Orders' || activeItem === 'Markets') {
+    view = (
+      <p className="app-placeholder">
+        This view is not built yet. Orders and market data for the selected demo account are on the Dashboard.
+      </p>
+    )
+  } else if (directory.status === 'loading') {
+    view = (
+      <p className="app-message" role="status">
+        Loading demo accounts…
+      </p>
+    )
+  } else if (directory.status === 'error') {
+    view = (
+      <div className="app-message" role="alert">
+        <p>Could not load the demo accounts: {describeLoadError(directory.error)}.</p>
+        {isServerUnavailable(directory.error) && <ServerHint />}
+        <button type="button" className="app-retry" onClick={reloadDirectory}>
+          Retry
+        </button>
+      </div>
+    )
+  } else if (accounts === null || userId === null) {
+    view = <p className="app-message">The server returned no demo accounts, so there is nothing to show.</p>
+  } else if (activeItem === 'Dashboard') {
+    // Only the active view is mounted, so at most one view holds live
+    // connections or in-flight reads at a time.
+    view = (
+      <TradingDesk
+        client={client}
+        accounts={accounts}
+        userId={userId}
+        onUserChange={setUserId}
+        onBalanceChange={setBalance}
+      />
+    )
+  } else {
+    view = (
+      <div className="app-preview">
+        {/* The card's values are built in (#23), not read from the server,
+            so it is labeled and kept off the live desk. */}
+        <p className="app-preview-label">
+          <strong>Design preview with sample values.</strong> This card is not connected to your demo account. Live
+          cash and share positions are on the Dashboard.
+        </p>
+        <PortfolioSummary />
+      </div>
+    )
+  }
 
   return (
     <>
-      <TopNavigation activeItem={activeItem} onNavigate={setActiveItem} />
+      <TopNavigation activeItem={activeItem} onNavigate={navigate} balance={balance} />
       <main className="app-shell">
         <p className="app-community">UW–Madison FinTech Club</p>
         <h1>{activeItem}</h1>
-        <p className="app-description">
-          A student-built simulated trading platform.
-        </p>
+        <p className="app-description">A student-built simulated trading platform.</p>
+        {view}
         <p className="app-status">Built together. One contribution at a time.</p>
-        <PortfolioSummary />
       </main>
     </>
   )

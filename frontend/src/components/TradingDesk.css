@@ -1,0 +1,266 @@
+.trading-desk {
+  --surface: #111827;
+  --elevated: #1f2937;
+  --border: #334155;
+  --text: #f8fafc;
+  --text-secondary: #cbd5e1;
+  --text-muted: #94a3b8;
+  --accent: #22d3ee;
+  --accent-hover: #67e8f9;
+  --accent-subtle: #164e63;
+
+  display: grid;
+  gap: 24px;
+  min-width: 0;
+  color: var(--text);
+  font-family: Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
+}
+
+.trading-desk p {
+  margin: 0;
+}
+
+/* Header: title, simulation notice, and the selection controls. */
+
+.trading-desk-header {
+  display: grid;
+  gap: 16px;
+  padding: 24px;
+  background-color: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+}
+
+.trading-desk-intro h2 {
+  margin: 0 0 8px;
+  font-size: 20px;
+  font-weight: 600;
+}
+
+/* The simulation notice is always visible and set apart, not small print. */
+.trading-desk-simulation {
+  padding: 8px 12px;
+  border-left: 3px solid var(--accent);
+  border-radius: 4px;
+  background-color: var(--accent-subtle);
+  color: var(--text);
+  font-size: 14px;
+}
+
+.trading-desk-controls {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: flex-end;
+  gap: 16px;
+}
+
+.trading-desk-control {
+  display: grid;
+  flex: 1 1 12rem;
+  gap: 8px;
+  min-width: 0;
+  font-size: 14px;
+  font-weight: 600;
+}
+
+.trading-desk-control select {
+  width: 100%;
+  min-height: 44px;
+  padding: 10px 12px;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  background-color: #0b1120;
+  color: var(--text);
+  font: inherit;
+  font-weight: 400;
+}
+
+.trading-desk-refresh {
+  flex: 0 0 auto;
+  min-height: 44px;
+  padding: 8px 16px;
+  border: 0;
+  border-radius: 6px;
+  background-color: var(--accent);
+  color: #0b1120;
+  font: inherit;
+  font-weight: 600;
+  cursor: pointer;
+}
+
+.trading-desk-refresh:hover:enabled {
+  background-color: var(--accent-hover);
+}
+
+.trading-desk :disabled {
+  cursor: wait;
+  opacity: 0.65;
+}
+
+.trading-desk-control select:focus-visible,
+.trading-desk-refresh:focus-visible,
+.trading-desk-scroll:focus-visible {
+  outline: 2px solid var(--accent-hover);
+  outline-offset: 2px;
+}
+
+.trading-desk-refreshing {
+  min-height: 1.5em;
+  color: var(--text-muted);
+  font-size: 12px;
+}
+
+/* Loading, startup error, empty, and offline messages. */
+
+.trading-desk-message,
+.trading-desk-offline {
+  display: grid;
+  gap: 8px;
+  padding: 16px 24px;
+  background-color: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  color: var(--text-secondary);
+}
+
+/* Not red: an outage is not a financial loss. Weight and border carry it. */
+.trading-desk-offline,
+.trading-desk-message[role='alert'] {
+  border-left: 4px solid var(--accent);
+  color: var(--text);
+}
+
+/* Account balances. */
+
+.trading-desk-account {
+  display: grid;
+  gap: 16px;
+  min-width: 0;
+  padding: 24px;
+  background-color: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+}
+
+.trading-desk-account h2 {
+  margin: 0;
+  font-size: 16px;
+  font-weight: 600;
+}
+
+.trading-desk-account > p {
+  font-size: 14px;
+  color: var(--text-secondary);
+}
+
+.trading-desk-cash {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(min(100%, 10rem), 1fr));
+  gap: 16px;
+  margin: 0;
+}
+
+.trading-desk-cash div {
+  padding: 12px;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+}
+
+.trading-desk-cash dt {
+  color: var(--text-muted);
+  font-size: 12px;
+}
+
+.trading-desk-cash dd {
+  margin: 4px 0 0;
+  font-size: 20px;
+  font-weight: 600;
+  font-variant-numeric: tabular-nums;
+  overflow-wrap: anywhere;
+}
+
+.trading-desk-scroll {
+  overflow-x: auto;
+}
+
+.trading-desk-positions {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 14px;
+  font-variant-numeric: tabular-nums;
+  text-align: right;
+}
+
+.trading-desk-positions caption {
+  margin-bottom: 8px;
+  color: var(--text-secondary);
+  font-weight: 600;
+  text-align: left;
+}
+
+.trading-desk-positions th,
+.trading-desk-positions td {
+  padding: 8px 12px;
+  border-bottom: 1px solid var(--border);
+  white-space: nowrap;
+}
+
+.trading-desk-positions thead th {
+  color: var(--text-muted);
+  font-weight: 600;
+}
+
+.trading-desk-positions th:first-child {
+  text-align: left;
+}
+
+.trading-desk-positions tbody tr:last-child th,
+.trading-desk-positions tbody tr:last-child td {
+  border-bottom: none;
+}
+
+.trading-desk .trading-desk-note {
+  color: var(--text-muted);
+  font-size: 12px;
+}
+
+/* Panels: one column on phones, entry beside the market from 64rem. */
+
+.trading-desk-grid {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr);
+  gap: 24px;
+}
+
+.trading-desk-entry,
+.trading-desk-market,
+.trading-desk-orders {
+  min-width: 0;
+}
+
+.trading-desk-market {
+  display: grid;
+  align-content: start;
+  gap: 24px;
+}
+
+.trading-desk-entry .order-entry {
+  max-width: none;
+}
+
+@media (min-width: 64rem) {
+  .trading-desk-grid {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+
+  .trading-desk-orders {
+    grid-column: 1 / -1;
+  }
+}
+
+@media (max-width: 32rem) {
+  .trading-desk-header,
+  .trading-desk-account {
+    padding: 16px;
+  }
+}

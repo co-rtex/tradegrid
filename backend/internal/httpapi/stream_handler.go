@@ -74,6 +74,8 @@ type StreamConfig struct {
 	// beforeWrite, if set, runs before every message write. Tests use it to
 	// stall a connection and fill its queue.
 	beforeWrite func()
+	// afterPong, if set, runs after each answered ping.
+	afterPong func()
 }
 
 // Stream serves GET /api/v1/stream. Create one with NewStream, register it
@@ -243,6 +245,9 @@ func (s *Stream) run(conn *websocket.Conn, sub *realtime.Subscription, seq int64
 					cancel()
 					conn.CloseNow()
 					return
+				}
+				if s.cfg.afterPong != nil {
+					s.cfg.afterPong()
 				}
 			}
 		}

@@ -25,7 +25,7 @@ run, not as a substitute for it.
 | Item | Value |
 | --- | --- |
 | Integration branch | `final/integration` plus `final/97-e2e-smoke` (smoke tests) |
-| Revision tested | `8c81060` (`final/97-e2e-smoke`) |
+| Revision tested | `45a8454` (`final/97-e2e-smoke`) |
 | Date | 2026-11-09 |
 | Machine | macOS (Apple silicon), Go 1.27.0, Node.js 22.22.2, Docker 28.5.2, Python 3.14.2 and 3.10 |
 | Contributor PRs included unmerged | #85 (#41 form), #86 (#37 reads), #82 (#72 hub); #81 (#71 contract, docs only) is referenced, not merged into the candidate |
@@ -60,7 +60,7 @@ they and the stacked PRs merge.
 Already merged and used as-is: #35, #42 (PR #91), #43, #62, #63, #64, #66, #67,
 #74, #75.
 
-## Automated Results on `8c81060`
+## Automated Results on `45a8454`
 
 | Check | Command | Result |
 | --- | --- | --- |
@@ -154,7 +154,7 @@ projects to `frontend/playwright.config.ts`.
 1. Review and merge the contributor PRs #86, #85, #82, and #81 (their owners
    resolve review comments and conflicts), then the stacked PRs in the order
    in [showcase.md](showcase.md#merge-order).
-2. Rerun every command in [Automated Results](#automated-results-on-8c81060)
+2. Rerun every command in [Automated Results](#automated-results-on-45a8454)
    on the merged `main` revision and update this file with that SHA.
 3. A person runs the [two-window demonstration](demo.md#two-window-demonstration)
    on `main` in two real browser windows, records pass/fail per scenario

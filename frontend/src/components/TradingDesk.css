@@ -264,3 +264,23 @@
     padding: 16px;
   }
 }
+
+/* Live-update status (#75) and the manual fallback when the stream stops. */
+
+.trading-desk-live {
+  display: grid;
+  gap: 8px;
+}
+
+.trading-desk-live-actions {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px 16px;
+}
+
+.trading-desk-live-actions p {
+  margin: 0;
+  color: var(--text-secondary, #cbd5e1);
+  font-size: 14px;
+}

@@ -85,8 +85,18 @@ deployment must serve `/api/v1` from the same origin as the built files.
   have been accepted.
 - After an accepted order, and whenever you press **Refresh**, the desk reads
   the accounts, the selected account's orders, and the selected symbol's order
-  book and trades again. There is no polling: to see another window's trades,
-  press **Refresh**.
+  book and trades again. There is no polling.
+- **Live updates** (`docs/realtime.md`): the desk opens one WebSocket to
+  `/api/v1/stream` through the Vite proxy (`ws: true`). Each `exchange.changed`
+  notice is only a signal: the desk re-reads, through the same REST calls, the
+  snapshots it affects for the current selection (the symbol's book and trades
+  when the symbol matches, the account's balances and orders when the account is
+  in `affectedUserIds`), with bursts coalesced. `hello`, a reconnect, or a
+  missed sequence re-reads everything; a server restart clears every held value
+  first. Another window's trades therefore appear without pressing Refresh. The
+  **Live updates** indicator shows the stream state only: it says nothing about
+  whether an order succeeded. If the stream stops, **Refresh** still works and
+  **Reconnect live updates** restarts it. A reconnect never resends an order.
 - The demo account is chosen once for the whole app (`src/hooks/useDemoAccounts.ts`):
   the app loads the accounts from `GET /api/v1/accounts`, selects the first one
   until you choose, and every view that shows account data renders the same

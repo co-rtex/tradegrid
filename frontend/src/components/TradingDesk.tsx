@@ -14,7 +14,10 @@ import {
 } from '../api/client'
 import { describeLoadError } from '../api/describe'
 import type { DemoAccount } from '../hooks/useDemoAccounts'
+import { useRealtime, type RefreshRequest } from '../hooks/useRealtime'
+import type { WebSocketLike } from '../lib/realtime'
 import { formatUsdCents, formatWholeShares } from '../lib/money'
+import ConnectionStatus from './ConnectionStatus'
 import DemoAccountSelect from './DemoAccountSelect'
 import OrderBook from './OrderBook'
 import OrderEntryForm, {
@@ -35,6 +38,8 @@ export interface TradingDeskProps {
   /** The app-level selected account. The desk never picks one itself. */
   userId: string
   onUserChange: (userId: string) => void
+  /** Stream overrides for tests; the app uses the page's own host. */
+  realtime?: { url?: string; createSocket?: (url: string) => WebSocketLike }
   /**
    * Called with the selected account's available cash, formatted for the
    * navigation bar, or `undefined` while no server value is known.
@@ -161,6 +166,7 @@ export default function TradingDesk({
   userId,
   onUserChange,
   onBalanceChange,
+  realtime,
 }: TradingDeskProps) {
   const titleId = useId()
   const accountTitleId = useId()
@@ -274,6 +280,39 @@ export default function TradingDesk({
     }
     void loadMarket(symbol, true)
   }
+
+  /**
+   * Live refresh (#77, docs/realtime.md). A notification is only a signal to
+   * re-read the authoritative snapshots it affects for the selection current
+   * when it is handled; it never carries data. Selection changes load
+   * through the desk's own selectors, so they are not repeated here. After a
+   * server restart every held value belongs to the old server, so it is
+   * cleared rather than kept while reloading.
+   */
+  function refreshFromStream({ views, reason, selection }: RefreshRequest) {
+    if (reason === 'selection-changed') return
+    const keepData = reason !== 'server-restarted'
+    if (!ready) {
+      // The stream came up while the desk could not load: try again now.
+      refresh()
+      return
+    }
+    if (views.includes('account')) void loadAccounts((signal) => client.getAccounts({ signal }), { keepData })
+    if (views.includes('orders')) void loadAccountOrders(selection.userId, keepData)
+    if (views.includes('orderbook')) {
+      void loadBook((signal) => client.getOrderBook(selection.symbol, { signal }), { keepData })
+    }
+    if (views.includes('executions')) {
+      void loadExecutions((signal) => client.getExecutions(selection.symbol, { signal }), { keepData })
+    }
+  }
+
+  const stream = useRealtime({
+    selection: { userId, symbol: symbol ?? '' },
+    onRefresh: refreshFromStream,
+    url: realtime?.url,
+    createSocket: realtime?.createSocket,
+  })
 
   async function submit(request: OrderEntryRequest) {
     if (submitting.current) return
@@ -430,6 +469,17 @@ export default function TradingDesk({
         <p className="trading-desk-refreshing" role="status">
           {refreshing ? 'Refreshing from the server…' : ''}
         </p>
+        <div className="trading-desk-live">
+          <ConnectionStatus status={stream.state} />
+          {(stream.state === 'disconnected' || stream.state === 'error') && (
+            <div className="trading-desk-live-actions">
+              <p>Press Refresh to read the latest values, or reconnect to resume live updates.</p>
+              <button type="button" className="trading-desk-refresh" onClick={stream.retry}>
+                Reconnect live updates
+              </button>
+            </div>
+          )}
+        </div>
       </header>
       {body}
     </section>

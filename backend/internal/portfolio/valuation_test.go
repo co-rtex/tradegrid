@@ -8,6 +8,7 @@ import (
 	"math"
 	"reflect"
 	"slices"
+	"strings"
 	"testing"
 )
 
@@ -299,8 +300,8 @@ func TestNegativeUnrealizedPnL(t *testing.T) {
 }
 
 func TestEmptyAndZeroPositions(t *testing.T) {
-	t.Run("no holdings", func(t *testing.T) {
-		got := value(t, account("alice", 0, cash(500, 100)), refPrices)
+	t.Run("no holdings in an empty catalog", func(t *testing.T) {
+		got := value(t, account("alice", 0, cash(500, 100)), map[string]int64{})
 		if len(got.Positions) != 0 || got.Totals != (Totals{Equity: 500}) {
 			t.Errorf("got %+v, want no positions and equity equal to cash total", got)
 		}
@@ -363,11 +364,33 @@ func TestReferencePriceErrors(t *testing.T) {
 	}
 }
 
-func TestExtraPricesIgnored(t *testing.T) {
-	prices := map[string]int64{"AAPL": 19000, "GOOG": 1, "MSFT": 42000}
-	got := value(t, seed("alice"), prices)
-	if want := value(t, seed("alice"), refPrices); !reflect.DeepEqual(got, want) {
-		t.Errorf("got %+v, want %+v", got, want)
+// A priced (tradable) symbol without a holding row is an error, not an
+// omitted position: the contract lists every tradable symbol, and a dropped
+// row would also drop its realized P&L from the totals.
+func TestPricedSymbolWithoutHolding(t *testing.T) {
+	prices := map[string]int64{"AAPL": 19000, "GOOG": 1, "MSFT": 42000, "ZZZ": 5}
+	got, err := Value(seed("alice"), prices)
+	if !errors.Is(err, ErrInvalidSnapshot) {
+		t.Fatalf("error = %v, want ErrInvalidSnapshot", err)
+	}
+	if !strings.Contains(err.Error(), "GOOG, ZZZ") {
+		t.Errorf("error %q should name the missing symbols in order", err)
+	}
+	if !reflect.DeepEqual(got, Valuation{}) {
+		t.Errorf("got %+v, want the zero Valuation", got)
+	}
+
+	s := seed("alice")
+	s.Holdings = s.Holdings[:1]
+	if _, err := Value(s, refPrices); !errors.Is(err, ErrInvalidSnapshot) {
+		t.Errorf("snapshot missing a catalog symbol: error = %v, want ErrInvalidSnapshot", err)
+	}
+}
+
+func TestEmptySymbolRejected(t *testing.T) {
+	s := AccountSnapshot{Cash: cash(0, 0), Holdings: []Holding{holding("", 0, 0, 0, 0)}}
+	if _, err := Value(s, map[string]int64{"": 1}); !errors.Is(err, ErrInvalidSnapshot) {
+		t.Errorf("error = %v, want ErrInvalidSnapshot", err)
 	}
 }
 
@@ -402,7 +425,7 @@ func TestOverflow(t *testing.T) {
 		{"total realized below min", 0, []Holding{h("A", 0, 0, 0, -MaxAmount), h("B", 0, 0, 0, -1)},
 			map[string]int64{"A": 1, "B": 1}, 0, ErrOverflow},
 		{"unrealized at max", 0, []Holding{h("A", 1, 0, 1, 0)}, map[string]int64{"A": MaxAmount}, MaxAmount, nil},
-		{"unrealized at min", 0, []Holding{h("A", 1, 0, MaxAmount, 0)}, map[string]int64{"A": 1}, 1, nil},
+		{"large unrealized loss", 0, []Holding{h("A", 1, 0, MaxAmount, 0)}, map[string]int64{"A": 1}, 1, nil},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			s := AccountSnapshot{Cash: cash(tc.cash, 0), Holdings: tc.holdings}

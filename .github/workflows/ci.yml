@@ -53,6 +53,17 @@ jobs:
       - name: Test the schema and seeds
         run: backend/db/test-schema
 
+  analytics:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-python@v6
+        with:
+          # The oldest version the report supports (analytics/README.md).
+          python-version: '3.10'
+      - name: Test the trade-activity report
+        run: python3 -m unittest discover -s analytics -v
+
   frontend:
     runs-on: ubuntu-latest
     defaults:

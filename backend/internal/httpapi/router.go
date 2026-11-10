@@ -28,7 +28,13 @@ import (
 // each group in its own handler file. Register every API path with
 // handleAPI, never with mux.HandleFunc directly: the /api/ catch-all below
 // would otherwise answer its unsupported methods with 404 instead of 405.
-func NewRouter(svc *exchange.Service) http.Handler {
+//
+// Options add optional routes: WithStream adds GET /api/v1/stream (#73).
+func NewRouter(svc *exchange.Service, opts ...Option) http.Handler {
+	var cfg routerConfig
+	for _, opt := range opts {
+		opt(&cfg)
+	}
 	mux := http.NewServeMux()
 	mux.HandleFunc("GET /health", handleHealth)
 
@@ -46,11 +52,31 @@ func NewRouter(svc *exchange.Service) http.Handler {
 	// Portfolio read (#69), in portfolio_handlers.go.
 	handleAPI(mux, "/api/v1/portfolio", methods{http.MethodGet: handlePortfolio(svc)})
 
+	// The real-time stream (#73), in stream_handler.go. It answers every
+	// method itself so that its 405 lists exactly "Allow: GET", as
+	// docs/realtime.md requires.
+	if cfg.stream != nil {
+		mux.Handle(streamPath, cfg.stream)
+	}
+
 	// Any other path under /api/, with any method, is NOT_FOUND. "/api" is
 	// listed too so the mux does not redirect it to "/api/".
 	mux.HandleFunc("/api", handleAPINotFound)
 	mux.HandleFunc("/api/", handleAPINotFound)
 	return mux
+}
+
+// Option configures optional routes for NewRouter.
+type Option func(*routerConfig)
+
+type routerConfig struct {
+	stream *Stream
+}
+
+// WithStream serves s at GET /api/v1/stream. Without it the path is
+// NOT_FOUND like any other unknown API path.
+func WithStream(s *Stream) Option {
+	return func(c *routerConfig) { c.stream = s }
 }
 
 // methods maps an HTTP method to the handler for one API path.

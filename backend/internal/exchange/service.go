@@ -8,6 +8,11 @@
 // exactly as it was. One mutex covers submissions and reads, so the order in
 // which submissions take the lock is their acceptance order.
 //
+// After a commit, and only then, the service publishes one realtime.Event to
+// the optional hub in Config. The hub never blocks, so holding the lock while
+// publishing keeps events in acceptance order without letting a slow
+// subscriber stall trading.
+//
 // The service is internal: HTTP (#36, #37) calls it.
 package exchange
 
@@ -24,6 +29,7 @@ import (
 	"github.com/co-rtex/tradegrid/backend/internal/instruments"
 	"github.com/co-rtex/tradegrid/backend/internal/matching"
 	"github.com/co-rtex/tradegrid/backend/internal/orders"
+	"github.com/co-rtex/tradegrid/backend/internal/realtime"
 	"github.com/co-rtex/tradegrid/backend/internal/risk"
 )
 
@@ -44,6 +50,9 @@ type Config struct {
 	// OrderID and ExecutionID turn a sequence number into an ID.
 	OrderID     func(seq int64) string
 	ExecutionID func(seq int64) string
+	// Events, if set, receives one event per committed submission. It must
+	// be new: its sequence starts at zero like the exchange's.
+	Events *realtime.Hub
 }
 
 // SubmitRequest carries only client-owned fields. Side and Type are wire
@@ -248,7 +257,31 @@ func (s *Service) Submit(req SubmitRequest) (SubmitResult, error) {
 	s.history = append(slices.Clip(s.history), c.records...)
 	s.orderSeq = seq
 	s.execSeq += int64(len(c.records))
-	return SubmitResult{Order: c.changed[o.ID], Executions: slices.Clone(c.records)}, nil
+	result := SubmitResult{Order: c.changed[o.ID], Executions: slices.Clone(c.records)}
+	if s.cfg.Events != nil {
+		// Sequences only grow under the lock, so this cannot be out of order.
+		_ = s.cfg.Events.Publish(changeEvent(result))
+	}
+	return result, nil
+}
+
+// changeEvent describes a committed submission for the realtime hub. The
+// affected accounts are the submitter and every counterparty, unique and
+// sorted.
+func changeEvent(r SubmitResult) realtime.Event {
+	users := []string{r.Order.UserID}
+	for _, x := range r.Executions {
+		users = append(users, x.BuyerUserID, x.SellerUserID)
+	}
+	slices.Sort(users)
+	return realtime.Event{
+		Sequence:        r.Order.Sequence,
+		Symbol:          r.Order.Symbol,
+		OrderID:         r.Order.ID,
+		UserID:          r.Order.UserID,
+		ExecutionCount:  len(r.Executions),
+		AffectedUserIDs: slices.Compact(users),
+	}
 }
 
 // checkRequest applies request rules in the order docs/api.md lists them.

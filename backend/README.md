@@ -149,6 +149,31 @@ The server never retries a submission, and clients must not retry a POST
 automatically: a timed-out request may already have been accepted, so check
 `GET /api/v1/orders` instead.
 
+### Live change notifications
+
+`GET /api/v1/stream` is a one-way WebSocket defined in `docs/realtime.md`
+(#71, PR #81). After every committed order it sends a small `exchange.changed`
+notice (symbol, order, submitter, execution count, and affected accounts) with
+the acceptance sequence; clients then re-read the REST snapshots above. It
+starts with `hello`, sends a `heartbeat` after 15 seconds of silence, never
+sends balances or books, and never accepts orders: a client that sends any data
+message is closed with code `1003`. Rejected orders send nothing.
+
+```bash
+curl -i http://127.0.0.1:8080/api/v1/stream   # 426 UPGRADE_REQUIRED: needs a WebSocket client
+```
+
+Browsers connect through the Vite proxy (`ws: true` in
+`frontend/vite.config.ts`), which keeps the page's origin. Allowed origins are
+same-origin requests, requests without `Origin`, and `http://localhost:5173` /
+`http://127.0.0.1:5173`; any other `Origin` gets `403 FORBIDDEN_ORIGIN`. Each
+connection has a queue of 64 notices: a client that falls behind is closed with
+`1013` and should reconnect and re-fetch, without ever delaying trading. On
+shutdown every connection is closed with `1001`. The handler is in
+`internal/httpapi/stream_handler.go`, the hub in `internal/realtime`, and the
+WebSocket library is [`github.com/coder/websocket`](https://github.com/coder/websocket)
+(the only dependency, chosen in `docs/realtime.md`).
+
 ### Stop the server
 
 Press `Ctrl-C` in the terminal where the server is running. The server stops
@@ -190,7 +215,8 @@ backend/
     server/
       main.go         Configuration and HTTP server startup and shutdown
   internal/
-    httpapi/          HTTP routes and JSON responses
+    httpapi/          HTTP routes, JSON responses, and the WebSocket stream
+    realtime/         Bounded in-process hub for committed-change events
     matching/         Limit-order matching engine
     orders/           Order domain model
     risk/             Pure cash/share reservation and settlement arithmetic
@@ -211,5 +237,4 @@ in that directory private to this backend module.
 
 The Order domain model lives in `internal/orders`; see
 [Order Domain Model](../docs/order-model.md) for its fields, enumerations, and
-lifecycle. Exchange features, persistence, and real-time communication are left to their
-respective contributor issues.
+lifecycle. Persistence is out of the MVP's scope: the exchange is in memory.

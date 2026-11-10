@@ -178,6 +178,12 @@ class DuplicateCountingTests(unittest.TestCase):
         self.assertEqual(report.duplicates_ignored, 3)
         self.assertEqual(rows_as_tuples(report), [("AAPL", 1, 10, 190000)])
 
+    def test_records_differing_only_as_json_values_are_rejected(self):
+        # Python's == treats True and 1 as equal; JSON does not.
+        with self.assertRaises(ta.InputError) as ctx:
+            report_for(doc(execution(1, note=True), execution(1, note=1)))
+        self.assertIn('execution "exe-1" differs from the record', str(ctx.exception))
+
     def test_repeated_record_in_one_list_counts_once(self):
         report = report_for(doc(execution(1), execution(1), execution(2)))
         self.assertEqual(report.duplicates_ignored, 1)
@@ -307,6 +313,7 @@ class ValidationTests(unittest.TestCase):
             "2026-10-20T15:00:02",
             "2026-13-01T15:00:02Z",
             "2026-02-30T15:00:02Z",
+            "\uff12\uff10\uff12\uff16-10-20T15:00:02Z",  # full-width digits
             1760972402,
         ):
             with self.subTest(executedAt=value):
@@ -349,6 +356,7 @@ class DocumentShapeTests(unittest.TestCase):
             "response": {"status": 201, "body": {"executions": []}},
             "after": {
                 "GET /api/v1/orders?userId=alice": {"orders": [{"price": "not checked"}]},
+                "GET /api/v1/executionsX?symbol=AAPL": {"not": "an executions read"},
                 "GET /api/v1/executions?symbol=AAPL": {"executions": [execution(1)]},
             },
         }

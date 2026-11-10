@@ -62,7 +62,7 @@ REQUIRED_FIELDS = (
 
 SYMBOL_PATTERN = re.compile(r"[A-Z]+")
 TIMESTAMP_PATTERN = re.compile(
-    r"(\d{4})-(\d{2})-(\d{2})T(\d{2}):(\d{2}):(\d{2})(\.\d+)?Z"
+    r"([0-9]{4})-([0-9]{2})-([0-9]{2})T([0-9]{2}):([0-9]{2}):([0-9]{2})(\.[0-9]+)?Z"
 )
 
 EXIT_OK = 0
@@ -214,7 +214,7 @@ def find_execution_lists(document: Any, source: str) -> list[tuple[str, Any]]:
     after = document.get("after")
     if isinstance(after, dict):
         for key in sorted(after):
-            if not key.startswith(EXECUTIONS_READ_PREFIX):
+            if not (key == EXECUTIONS_READ_PREFIX or key.startswith(EXECUTIONS_READ_PREFIX + "?")):
                 continue
             read = after[key]
             if not isinstance(read, dict) or "executions" not in read:
@@ -284,6 +284,11 @@ def _check_timestamp(value: Any) -> str | None:
     except ValueError:
         return problem
     return None
+
+
+def canonical(record: dict) -> str:
+    """Return record as JSON text with sorted keys, for exact comparison."""
+    return json.dumps(record, sort_keys=True)
 
 
 def execution_problems(record: Any) -> list[str]:
@@ -378,7 +383,9 @@ def collect_executions(document: Any, source: str) -> tuple[list[Execution], int
 
             execution_id = record["id"]
             if execution_id in seen_records:
-                if record != seen_records[execution_id]:
+                # Compare canonical JSON: Python's == treats true, 1, and 1.0
+                # as equal, but they are different JSON values.
+                if canonical(record) != canonical(seen_records[execution_id]):
                     problems.append(
                         f"{where}: execution {json.dumps(execution_id)} differs from the record "
                         f"with the same id at {seen_locations[execution_id]}"

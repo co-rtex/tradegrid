@@ -16,6 +16,8 @@ dist/
 build/
 .next/
 coverage/
+playwright-report/
+test-results/
 
 # Go
 bin/

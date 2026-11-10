@@ -187,6 +187,47 @@ page:
 `vitest.config.ts`, separate from `vite.config.ts`, so test tools never reach
 the production bundle.
 
+## Browser smoke tests
+
+`npm run e2e` runs [Playwright](https://playwright.dev/) smoke tests in
+`e2e/` against the **real** Go backend and Vite frontend in Chromium. It starts
+both itself on ports reserved for the tests (backend `18080`, frontend `15173`;
+override with `TRADEGRID_E2E_BACKEND_PORT` / `TRADEGRID_E2E_FRONTEND_PORT`),
+never reusing a server you have open, so every run begins from the seeded demo
+state, and it stops both when it finishes or fails. Go must be installed.
+
+One-time setup, from `frontend/`:
+
+```bash
+npm ci
+npx playwright install chromium
+```
+
+Then:
+
+```bash
+npm run e2e
+```
+
+`e2e/trading.spec.ts` drives two isolated browser windows, Alice and Bob,
+through a full fill with price improvement, a partial fill with its retained
+reservation, a risk rejection that changes nothing, and a cross-account fill
+that updates both portfolios live, plus rapid account switching. It asserts the
+dollar amounts on screen, worked out from `docs/api.md` and
+`docs/portfolio.md`, and waits only for visible conditions. These scenarios run
+in order in one worker and build on each other, so run the whole file rather
+than a single test. `e2e/layout.spec.ts` checks that the page never scrolls
+sideways at 375, 768, and 1280 px and that every desk control is reachable
+with Tab and shows a focus style. Failures keep a trace and screenshots in
+`test-results/`, and an HTML report is written to `playwright-report/` (open
+it with `npx playwright show-report`); both are ignored by Git. CI runs the
+same command in the `e2e` job.
+
+Only Chromium is automated. Firefox and Safari (WebKit) are not installed by
+these steps; check them by hand (see `docs/release-acceptance.md`). Vite may
+log `ws proxy ... ECONNRESET` when a test closes a browser window: the browser
+dropped a stream connection, which is expected and not a failure.
+
 ## Directory structure
 
 ```text
@@ -233,6 +274,8 @@ frontend/
   package-lock.json  Locked dependency versions; commit dependency updates
   vite.config.ts     Vite configuration: React plugin and the /api proxy
   vitest.config.ts   Test runner configuration (jsdom, setup file)
+  playwright.config.ts Browser smoke tests: starts the backend and Vite
+  e2e/               Playwright smoke scenarios (npm run e2e)
   tsconfig*.json     TypeScript settings for the app and build configuration
   .oxlintrc.json     Linter configuration
 ```

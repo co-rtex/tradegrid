@@ -106,7 +106,6 @@ unknown path gets `404 NOT_FOUND` and an unsupported method gets
 `405 METHOD_NOT_ALLOWED` with an `Allow` header, both as JSON. Restarting the
 server resets the exchange to the seeded state.
 
-<<<<<<< HEAD
 ### Live change notifications
 
 `GET /api/v1/stream` is a one-way WebSocket defined in `docs/realtime.md`
@@ -131,7 +130,7 @@ shutdown every connection is closed with `1001`. The handler is in
 `internal/httpapi/stream_handler.go`, the hub in `internal/realtime`, and the
 WebSocket library is [`github.com/coder/websocket`](https://github.com/coder/websocket)
 (the only dependency, chosen in `docs/realtime.md`).
-=======
+
 ### Submit an order
 
 `POST /api/v1/orders` submits one `LIMIT` order for a demo account. Send the
@@ -168,7 +167,6 @@ contract's JSON error body and error order:
 The server never retries a submission, and clients must not retry a POST
 automatically: a timed-out request may already have been accepted, so check
 `GET /api/v1/orders` instead.
->>>>>>> b7a7fce (Add the limit-order submission endpoint (#36))
 
 ### Stop the server
 

@@ -8,6 +8,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/co-rtex/tradegrid/backend/internal/exchange"
 	"github.com/co-rtex/tradegrid/backend/internal/httpapi"
 )
 
@@ -61,7 +62,7 @@ func TestServeAndShutdown(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 	done := make(chan error, 1)
-	go func() { done <- serve(ctx, ln, httpapi.NewRouter()) }()
+	go func() { done <- serve(ctx, ln, httpapi.NewRouter(exchange.New(exchange.Config{}))) }()
 
 	resp, err := http.Get("http://" + addr + "/health")
 	if err != nil {

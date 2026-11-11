@@ -17,6 +17,7 @@ import (
 	"syscall"
 	"time"
 
+	"github.com/co-rtex/tradegrid/backend/internal/exchange"
 	"github.com/co-rtex/tradegrid/backend/internal/httpapi"
 )
 
@@ -54,7 +55,9 @@ func run(ctx context.Context) error {
 		return fmt.Errorf("listen on %s: %w", addr, err)
 	}
 	log.Printf("TradeGrid backend listening on http://%s (press Ctrl-C to stop)", ln.Addr())
-	return serve(ctx, ln, httpapi.NewRouter())
+	// One exchange per process: restarting the server resets it to the
+	// seeded demo state (docs/api.md).
+	return serve(ctx, ln, httpapi.NewRouter(exchange.New(exchange.Config{})))
 }
 
 // listenPort returns the port from TRADEGRID_HTTP_PORT, or the default when

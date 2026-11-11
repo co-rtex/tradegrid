@@ -2,8 +2,9 @@
 
 This directory contains the Go backend. Running it starts a local HTTP server
 with a health endpoint, `GET /health`, that reports whether the server is up.
-The trading API contract is in [docs/api.md](../docs/api.md), but its routes
-are not implemented in the running server yet. See the repository's
+The trading API contract is in [docs/api.md](../docs/api.md). The read
+routes are implemented (see [Read the exchange](#read-the-exchange)); order
+submission (`POST /api/v1/orders`, #36) is not yet. See the repository's
 [Developer Setup and Demo Guide](../docs/demo.md) for the current server,
 fixture scenarios, and feature status.
 
@@ -84,6 +85,27 @@ the database or the exchange. It accepts `GET` (and `HEAD`); any other method,
 such as `POST`, gets `405 Method Not Allowed` with an `Allow: GET, HEAD`
 header. Paths with no route get `404 Not Found`.
 
+### Read the exchange
+
+The server holds one in-memory exchange with the two seeded demo accounts.
+These read routes return its current state, as specified in
+[docs/api.md](../docs/api.md):
+
+```bash
+curl -i http://127.0.0.1:8080/api/v1/symbols
+curl -i http://127.0.0.1:8080/api/v1/accounts
+curl -i "http://127.0.0.1:8080/api/v1/orders?userId=alice"
+curl -i "http://127.0.0.1:8080/api/v1/orderbook?symbol=AAPL"
+curl -i "http://127.0.0.1:8080/api/v1/executions?symbol=AAPL&userId=bob"
+```
+
+The handlers are in `internal/httpapi/read_handlers.go`. Invalid queries get
+the contract's JSON error body, for example `400 INVALID_QUERY` for a missing
+`symbol` and `404 UNKNOWN_USER` for an unknown `userId`. Under `/api/`, an
+unknown path gets `404 NOT_FOUND` and an unsupported method gets
+`405 METHOD_NOT_ALLOWED` with an `Allow` header, both as JSON. Restarting the
+server resets the exchange to the seeded state.
+
 ### Stop the server
 
 Press `Ctrl-C` in the terminal where the server is running. The server stops
@@ -136,7 +158,11 @@ Keep `cmd/server/main.go` focused on starting the application: reading
 configuration, opening the listener, and stopping cleanly. Routes belong in
 `internal/httpapi`. `NewRouter` in `router.go` registers each route with a
 method and path, such as `mux.HandleFunc("GET /health", handleHealth)`, and
-each group of handlers lives in its own file. Create packages
+each group of handlers lives in its own file. Register every `/api/` path with
+`handleAPI` instead, for example
+`handleAPI(mux, "/api/v1/symbols", methods{http.MethodGet: handleSymbols})`,
+so its unsupported methods get the JSON `405` rather than the `/api/`
+catch-all's `404`. Create packages
 under `backend/internal/` as backend functionality is added; Go keeps packages
 in that directory private to this backend module.
 

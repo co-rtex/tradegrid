@@ -6,15 +6,18 @@ into the running browser or HTTP server.
 
 ## What Works Today
 
-- The Go backend starts a local HTTP server with `GET /health`.
+- The Go backend starts a local HTTP server with `GET /health` and the
+  read-only API routes, which show the seeded demo accounts, symbols, and an
+  empty exchange.
 - The React frontend starts a local TradeGrid application shell.
 - PostgreSQL can run locally for migration-tool development.
 - The matching, account, risk, order, and execution packages have tests that
   verify the fixture scenarios in this guide.
 
-The browser TradingDesk and the live REST trading endpoints are not implemented
-yet. You cannot submit a trade through the running browser or server at this
-time. The full-fill, partial-fill, and risk-rejection sections below are exact
+The browser TradingDesk and the order submission endpoint are not implemented
+yet. You can read the exchange's state through the running server, but you
+cannot submit a trade through the running browser or server at this time.
+The full-fill, partial-fill, and risk-rejection sections below are exact
 fixture and contract behavior, not a live demo procedure yet.
 
 ## Prerequisites
@@ -53,6 +56,17 @@ curl -i http://127.0.0.1:8080/health
 
 It returns `200 OK` and `{"status":"ok"}` when the HTTP server is running.
 This health check does not check PostgreSQL or a running exchange.
+
+Read the exchange's current state, which starts as the seed state below:
+
+```bash
+curl -i http://127.0.0.1:8080/api/v1/accounts
+curl -i "http://127.0.0.1:8080/api/v1/orderbook?symbol=AAPL"
+```
+
+The read routes and their query parameters are listed in the
+[backend README](../backend/README.md#read-the-exchange) and specified in the
+[API contract](api.md).
 
 Set `TRADEGRID_HTTP_PORT` before starting the server to choose another local
 port:
@@ -110,11 +124,12 @@ database data.
 
 ## State and Reset Behavior
 
-The current executable backend exposes only `/health`, so it has no live
-trading state to inspect or preserve. The Sprint 2 exchange contract specifies
-an in-memory exchange: when the future exchange server restarts, it begins
-again with the two demo accounts below, no orders, and no executions. It has no
-runtime persistence or recovery. PostgreSQL is not connected to that runtime.
+The running backend holds one in-memory exchange, which the read routes
+expose. Until order submission is wired in, nothing changes that state, so it
+always matches the seed: the two demo accounts below, no orders, and no
+executions. When the server restarts, the exchange begins again from that
+seed. It has no runtime persistence or recovery. PostgreSQL is not connected
+to that runtime.
 
 ## Demo Accounts and Symbols
 
@@ -183,7 +198,7 @@ accounts remain at the starting values above.
 
 The following work is not implemented in the live application yet:
 
-- Live HTTP trading API and integration with the in-memory exchange.
+- Order submission over HTTP (`POST /api/v1/orders`).
 - Browser TradingDesk, demo-account selection, and order submission.
 - Manual Refresh; the planned UI must reload authoritative snapshots after an
   order or a user-requested refresh, without polling or WebSockets.

@@ -302,17 +302,21 @@ func checkRequest(req SubmitRequest) (orders.Side, error) {
 
 func internal(err error) *Error { return newError(CodeInternal, "", err) }
 
+// Read methods reject invalid queries in docs/api.md's order: missing
+// parameters and out-of-range limits (INVALID_QUERY) first, then an unknown
+// user (UNKNOWN_USER), then an unknown symbol (UNKNOWN_SYMBOL).
+
 // Orders returns a user's accepted orders in every status, newest first.
 func (s *Service) Orders(userID string, limit int) ([]Order, error) {
 	if userID == "" {
 		return nil, newError(CodeInvalidQuery, "userId", errors.New("userId is required"))
 	}
-	if !s.hasUser(userID) {
-		return nil, newError(CodeUnknownUser, "userId", fmt.Errorf("unknown user %q", userID))
-	}
 	limit, err := bound(limit, DefaultLimit, MaxLimit, "limit")
 	if err != nil {
 		return nil, err
+	}
+	if !s.hasUser(userID) {
+		return nil, newError(CodeUnknownUser, "userId", fmt.Errorf("unknown user %q", userID))
 	}
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -333,15 +337,15 @@ func (s *Service) Executions(symbol, userID string, limit int) ([]executions.Rec
 	if symbol == "" {
 		return nil, newError(CodeInvalidQuery, "symbol", errors.New("symbol is required"))
 	}
-	if !instruments.Supported(symbol) {
-		return nil, newError(CodeUnknownSymbol, "symbol", fmt.Errorf("unsupported symbol %q", symbol))
+	limit, err := bound(limit, DefaultLimit, MaxLimit, "limit")
+	if err != nil {
+		return nil, err
 	}
 	if userID != "" && !s.hasUser(userID) {
 		return nil, newError(CodeUnknownUser, "userId", fmt.Errorf("unknown user %q", userID))
 	}
-	limit, err := bound(limit, DefaultLimit, MaxLimit, "limit")
-	if err != nil {
-		return nil, err
+	if !instruments.Supported(symbol) {
+		return nil, newError(CodeUnknownSymbol, "symbol", fmt.Errorf("unsupported symbol %q", symbol))
 	}
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -362,12 +366,12 @@ func (s *Service) OrderBook(symbol string, depth int) (BookSnapshot, error) {
 	if symbol == "" {
 		return BookSnapshot{}, newError(CodeInvalidQuery, "symbol", errors.New("symbol is required"))
 	}
-	if !instruments.Supported(symbol) {
-		return BookSnapshot{}, newError(CodeUnknownSymbol, "symbol", fmt.Errorf("unsupported symbol %q", symbol))
-	}
 	depth, err := bound(depth, DefaultDepth, MaxDepth, "depth")
 	if err != nil {
 		return BookSnapshot{}, err
+	}
+	if !instruments.Supported(symbol) {
+		return BookSnapshot{}, newError(CodeUnknownSymbol, "symbol", fmt.Errorf("unsupported symbol %q", symbol))
 	}
 	s.mu.Lock()
 	defer s.mu.Unlock()

@@ -62,9 +62,14 @@ Sent once, first, immediately after the upgrade.
   "version": 1,
   "asOfSequence": 2,
   "sentAt": "2026-10-20T15:00:05Z",
-  "data": { "heartbeatSeconds": 15 }
+  "data": { "heartbeatSeconds": 15, "serverInstanceId": "8f3a1c2e9b7d4065" }
 }
 ```
+
+| `data` field | Type | Meaning |
+| --- | --- | --- |
+| `heartbeatSeconds` | integer | Heartbeat interval, `15`. |
+| `serverInstanceId` | string | Opaque ID chosen randomly when the server process starts (for example 16 hex characters from `crypto/rand`) and fixed until it exits. A different value means the server restarted and every sequence started over. Clients compare it for equality only. |
 
 `asOfSequence` is the committed sequence at the moment this connection was subscribed. **The server guarantees an `exchange.changed` event for every commit with a larger sequence**, in order, for as long as the connection stays open. (#72: register the subscriber and read the committed sequence atomically, so no commit falls between them.)
 
@@ -126,7 +131,8 @@ Each client keeps `lastSeen`, the highest sequence it has accounted for.
 
 | Message | Condition | Client action |
 | --- | --- | --- |
-| `hello` | any | Set `lastSeen = asOfSequence`, then re-fetch every snapshot it displays. If `asOfSequence` is lower than a `lastSeen` from an earlier connection, the server restarted: discard everything held and treat this as a fresh start. |
+| `hello` | `serverInstanceId` differs from the previous connection's | The server restarted. Discard all sequence state (`lastSeen` and every stored orderbook `asOfSequence`) and all data held, then continue as below. Comparing sequences cannot detect this: a restarted server may already have passed the old `lastSeen`. |
+| `hello` | any | Remember `serverInstanceId`, set `lastSeen = asOfSequence`, then re-fetch every snapshot it displays. |
 | `exchange.changed` | `asOfSequence <= lastSeen` | Duplicate or stale: ignore. |
 | `exchange.changed` | `asOfSequence == lastSeen + 1` | Set `lastSeen`. Refresh the views this event affects (see Client-side Filtering). |
 | `exchange.changed` | `asOfSequence > lastSeen + 1` | Gap: set `lastSeen = asOfSequence` and re-fetch every displayed snapshot. |
@@ -135,7 +141,7 @@ Each client keeps `lastSeen`, the highest sequence it has accounted for.
 
 The server never sends duplicates or out-of-order events on one connection in normal operation; the rules above make clients correct even if it did.
 
-A `GET` started after a client receives an event always reflects at least that event's sequence, because events are only sent after commit. `GET /api/v1/orderbook` reports its own `asOfSequence`; clients may use it to discard a response older than one they already applied.
+A `GET` started after a client receives an event always reflects at least that event's sequence, because events are only sent after commit. `GET /api/v1/orderbook` reports its own `asOfSequence`; clients may use it to discard a response older than one they already applied from the same `serverInstanceId`.
 
 ## Client-side Filtering and Selection Changes
 
@@ -210,6 +216,8 @@ These states describe the notification stream only. They do not say whether the 
 | `1011` | Server-side failure or write timeout | Reconnect with backoff. |
 | `1013` | Slow consumer, subscription dropped | Reconnect with backoff, then re-fetch. |
 
+Any other close code, or a connection lost without a close frame (`1006`), means reconnect with backoff.
+
 ## Development Proxy
 
 In development the frontend (Vite, port 5173) and backend (port 8080, `TRADEGRID_HTTP_PORT`) run separately. The browser talks only to Vite, which forwards API and WebSocket traffic, so the frontend uses same-origin URLs everywhere:
@@ -240,4 +248,13 @@ The backend uses [`github.com/coder/websocket`](https://github.com/coder/websock
 
 Alternatives considered: `github.com/gorilla/websocket` is also maintained and widely used, but needs manual write serialization and deadline handling; `golang.org/x/net/websocket` itself recommends other packages; the standard library has no WebSocket server. The frontend uses the browser's built-in `WebSocket` and needs no package.
 
-#73 adds the dependency to `backend/go.mod` and sets a small read limit (for example 512 bytes), since clients send no data.
+#73 adds the dependency to `backend/go.mod`.
+
+**Library defaults that differ from this contract.** Checked against `coder/websocket` v1.8.15; #73 must handle each one:
+
+| Library behavior | Contract | What #73 does |
+| --- | --- | --- |
+| `Accept` rejects a bad origin, method, or upgrade with a plain-text 403, 405, or 426. | JSON error body ([Endpoint](#endpoint)). | Check method, upgrade headers, and origin first and write the JSON errors itself. Call `Accept` only for a request that passed. Pass the same Vite origins in `AcceptOptions.OriginPatterns` (`localhost:5173`, `127.0.0.1:5173`) so the library's own check agrees and never fires. |
+| `Conn.CloseRead` closes with `1008` (policy violation) when a data message arrives. | `1003`. | Do not use `CloseRead`. Run its own read loop: call `Conn.Reader(ctx)`, and when it returns a message, close with `websocket.StatusUnsupportedData` (`1003`) without reading the payload. The loop also keeps ping/pong working, since control frames are processed only while a read is in progress. |
+| `Conn.SetReadLimit` closes with `1009` (message too big) when a message exceeds the limit. | `1003` for any data message. | Closing before reading the payload means the limit is never reached. Keep the default limit; do not rely on it to reject client messages. |
+

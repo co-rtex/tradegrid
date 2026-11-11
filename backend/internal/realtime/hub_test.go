@@ -196,9 +196,9 @@ func TestCloseReleasesEverySubscriber(t *testing.T) {
 	}
 }
 
-// TestConcurrentSubscribeAndPublish runs with -race in CI. Every subscriber,
-// whenever it joins, must see consecutive sequences starting right after its
-// subscribe sequence, until it leaves or is dropped.
+// TestConcurrentSubscribeAndPublish is meant to run with go test -race.
+// Every subscriber, whenever it joins, must see consecutive sequences
+// starting right after its subscribe sequence, until it leaves or is dropped.
 func TestConcurrentSubscribeAndPublish(t *testing.T) {
 	const events, subscribers = 500, 20
 	h := New(8)

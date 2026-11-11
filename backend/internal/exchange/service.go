@@ -20,6 +20,7 @@ import (
 	"cmp"
 	"errors"
 	"fmt"
+	"log"
 	"slices"
 	"sync"
 	"time"
@@ -259,8 +260,11 @@ func (s *Service) Submit(req SubmitRequest) (SubmitResult, error) {
 	s.execSeq += int64(len(c.records))
 	result := SubmitResult{Order: c.changed[o.ID], Executions: slices.Clone(c.records)}
 	if s.cfg.Events != nil {
-		// Sequences only grow under the lock, so this cannot be out of order.
-		_ = s.cfg.Events.Publish(changeEvent(result))
+		// Sequences only grow under the lock, so an error here means the hub
+		// was shared or reused, which Config forbids. The commit stands.
+		if err := s.cfg.Events.Publish(changeEvent(result)); err != nil {
+			log.Printf("exchange: realtime event for order %s dropped: %v", result.Order.ID, err)
+		}
 	}
 	return result, nil
 }

@@ -7,6 +7,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/co-rtex/tradegrid/backend/internal/accounts"
 	"github.com/co-rtex/tradegrid/backend/internal/realtime"
 )
 
@@ -111,6 +112,27 @@ func TestInternalFailurePublishesNoEvent(t *testing.T) {
 	noEvent(t, sub)
 }
 
+// TestSettlementFailurePublishesNoEvent fails a crossing submission at the
+// last step, after matching, so an event published before settlement would
+// be caught.
+func TestSettlementFailurePublishesNoEvent(t *testing.T) {
+	s, hub := newHubService(0)
+	sub, _ := hub.Subscribe()
+	mustSubmit(t, s, limit("alice", "SELL", 10, 18500))
+	next(t, sub)
+	// Drop alice's reservation so settling the fill finds it missing.
+	s.ledger = accounts.Seed()
+	_, err := s.Submit(limit("bob", "BUY", 10, 18500))
+	var exErr *Error
+	if !errors.As(err, &exErr) || exErr.Code != CodeInternal {
+		t.Fatalf("Submit error = %v, want INTERNAL from settlement", err)
+	}
+	noEvent(t, sub)
+	if hub.Sequence() != 1 {
+		t.Errorf("hub sequence = %d, want 1", hub.Sequence())
+	}
+}
+
 // TestEventFollowsCommit checks that a subscriber reading the exchange as soon
 // as it receives an event sees the committed state.
 func TestEventFollowsCommit(t *testing.T) {
@@ -153,7 +175,11 @@ func TestStalledSubscriberDoesNotBlockTrading(t *testing.T) {
 	go func() {
 		defer close(finished)
 		for i := range 10 {
-			mustSubmit(t, s, limit("bob", "BUY", 1, int64(100+i)))
+			// t.Fatal is not allowed outside the test goroutine.
+			if _, err := s.Submit(limit("bob", "BUY", 1, int64(100+i))); err != nil {
+				t.Error(err)
+				return
+			}
 		}
 	}()
 	select {
@@ -166,7 +192,8 @@ func TestStalledSubscriberDoesNotBlockTrading(t *testing.T) {
 	}
 }
 
-// TestConcurrentSubmissionsPublishInAcceptanceOrder runs with -race in CI.
+// TestConcurrentSubmissionsPublishInAcceptanceOrder is meant to run with
+// go test -race.
 // Every accepted submission produces exactly one event, in sequence order,
 // and a subscriber joining mid-trading sees every sequence after the one
 // Subscribe returned.

@@ -1,26 +1,86 @@
 .app-shell {
-  max-width: 64rem;
+  max-width: 80rem;
   margin: 0 auto;
-  padding: clamp(3rem, 10vw, 8rem) 1.5rem;
+  padding: 32px 16px 48px;
+}
+
+@media (min-width: 48rem) {
+  .app-shell {
+    padding: 48px 32px;
+  }
 }
 
 .app-community {
+  margin: 0;
   color: #38bdf8;
   font-weight: 600;
 }
 
 .app-shell h1 {
-  margin: 1rem 0;
-  font-size: clamp(2.5rem, 8vw, 4.5rem);
-  line-height: 1.1;
-  letter-spacing: -0.04em;
+  margin: 8px 0;
+  font-size: 28px;
+  font-weight: 700;
+  line-height: 1.2;
+  letter-spacing: -0.02em;
 }
 
 .app-description {
-  font-size: 1.25rem;
+  margin: 0 0 24px;
+  color: #cbd5e1;
 }
 
 .app-status {
-  margin-top: 2rem;
+  margin: 32px 0 0;
   color: #94a3b8;
+}
+
+.app-placeholder {
+  margin: 0;
+  color: #cbd5e1;
+}
+
+.app-preview {
+  display: grid;
+  gap: 16px;
+}
+
+.app-preview-label {
+  margin: 0;
+  padding: 8px 12px;
+  border-left: 3px solid #22d3ee;
+  border-radius: 4px;
+  background-color: #164e63;
+  color: #f8fafc;
+  font-size: 14px;
+}
+
+.app-preview .portfolio-summary {
+  margin: 0;
+}
+
+/* Loading and error states for the demo-account directory. */
+.app-message {
+  margin: 0;
+  color: #cbd5e1;
+}
+
+.app-message p {
+  margin: 0 0 12px;
+}
+
+.app-retry {
+  min-height: 44px;
+  padding: 10px 16px;
+  border: 1px solid #334155;
+  border-radius: 6px;
+  background-color: #1e293b;
+  color: #f8fafc;
+  font: inherit;
+  font-weight: 600;
+  cursor: pointer;
+}
+
+.app-retry:focus-visible {
+  outline: 2px solid #38bdf8;
+  outline-offset: 2px;
 }

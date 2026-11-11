@@ -3,8 +3,8 @@
 This directory contains the Go backend. Running it starts a local HTTP server
 with a health endpoint, `GET /health`, that reports whether the server is up.
 The trading API contract is in [docs/api.md](../docs/api.md). The read
-routes are implemented (see [Read the exchange](#read-the-exchange)); order
-submission (`POST /api/v1/orders`, #36) is not yet. See the repository's
+routes (see [Read the exchange](#read-the-exchange)) and order submission
+(see [Submit an order](#submit-an-order)) are implemented. See the repository's
 [Developer Setup and Demo Guide](../docs/demo.md) for the current server,
 fixture scenarios, and feature status.
 
@@ -106,6 +106,68 @@ unknown path gets `404 NOT_FOUND` and an unsupported method gets
 `405 METHOD_NOT_ALLOWED` with an `Allow` header, both as JSON. Restarting the
 server resets the exchange to the seeded state.
 
+### Live change notifications
+
+`GET /api/v1/stream` is a one-way WebSocket defined in `docs/realtime.md`
+(#71, PR #81). After every committed order it sends a small `exchange.changed`
+notice (symbol, order, submitter, execution count, and affected accounts) with
+the acceptance sequence; clients then re-read the REST snapshots above. It
+starts with `hello`, sends a `heartbeat` after 15 seconds of silence, never
+sends balances or books, and never accepts orders: a client that sends any data
+message is closed with code `1003`. Rejected orders send nothing.
+
+```bash
+curl -i http://127.0.0.1:8080/api/v1/stream   # 426 UPGRADE_REQUIRED: needs a WebSocket client
+```
+
+Browsers connect through the Vite proxy (`ws: true` in
+`frontend/vite.config.ts`), which keeps the page's origin. Allowed origins are
+same-origin requests, requests without `Origin`, and `http://localhost:5173` /
+`http://127.0.0.1:5173`; any other `Origin` gets `403 FORBIDDEN_ORIGIN`. Each
+connection has a queue of 64 notices: a client that falls behind is closed with
+`1013` and should reconnect and re-fetch, without ever delaying trading. On
+shutdown every connection is closed with `1001`. The handler is in
+`internal/httpapi/stream_handler.go`, the hub in `internal/realtime`, and the
+WebSocket library is [`github.com/coder/websocket`](https://github.com/coder/websocket)
+(the only dependency, chosen in `docs/realtime.md`).
+
+### Submit an order
+
+`POST /api/v1/orders` submits one `LIMIT` order for a demo account. Send the
+six request fields from [docs/api.md](../docs/api.md) as a JSON object with
+`Content-Type: application/json`:
+
+```bash
+curl -i -X POST http://127.0.0.1:8080/api/v1/orders \
+  -H 'Content-Type: application/json' \
+  -d '{"userId":"alice","symbol":"AAPL","side":"SELL","type":"LIMIT","price":19000,"quantity":10}'
+```
+
+An accepted order is `201 Created` whether it rested, partly filled, or fully
+filled. The body holds the order with its server-owned fields (`id`,
+`status`, `remaining`, `sequence`, timestamps) and the executions this
+submission produced (`[]` when it only rested). Read updated accounts and the
+book with the GET routes above.
+
+The handler is in `internal/httpapi/order_handlers.go`. It only decodes the
+request; the exchange validates, reserves, matches, and settles the order in
+one atomic step, so a rejected request changes nothing. Rejections use the
+contract's JSON error body and error order:
+
+| Problem | Status and code |
+| --- | --- |
+| Missing or non-JSON `Content-Type` | `415 UNSUPPORTED_MEDIA_TYPE` |
+| Body over 4096 bytes | `413 BODY_TOO_LARGE` |
+| Not exactly one JSON object, a duplicated key, or a wrong JSON type (for example `"price": "19000"`, `190.5`, `1e4`, or `null`) | `400 MALFORMED_JSON` |
+| Any other field, including server-owned ones such as `id` or `status`, or a field name in the wrong case | `400 UNKNOWN_FIELD` |
+| Unknown `userId` | `404 UNKNOWN_USER` |
+| Missing field, bad symbol, side, type, price, or quantity | `422`, codes as in docs/api.md |
+| Not enough available cash or shares | `422 INSUFFICIENT_CASH` / `INSUFFICIENT_SHARES` |
+
+The server never retries a submission, and clients must not retry a POST
+automatically: a timed-out request may already have been accepted, so check
+`GET /api/v1/orders` instead.
+
 ### Stop the server
 
 Press `Ctrl-C` in the terminal where the server is running. The server stops
@@ -147,7 +209,8 @@ backend/
     server/
       main.go         Configuration and HTTP server startup and shutdown
   internal/
-    httpapi/          HTTP routes and JSON responses
+    httpapi/          HTTP routes, JSON responses, and the WebSocket stream
+    realtime/         Bounded in-process hub for committed-change events
     matching/         Limit-order matching engine
     orders/           Order domain model
     risk/             Pure cash/share reservation and settlement arithmetic
@@ -168,5 +231,4 @@ in that directory private to this backend module.
 
 The Order domain model lives in `internal/orders`; see
 [Order Domain Model](../docs/order-model.md) for its fields, enumerations, and
-lifecycle. Exchange features, persistence, and real-time communication are left to their
-respective contributor issues.
+lifecycle. Persistence is out of the MVP's scope: the exchange is in memory.

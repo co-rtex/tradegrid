@@ -632,6 +632,56 @@ describe('TradingDesk live refresh', () => {
     expect(rows[1]).toHaveTextContent('Buy')
   })
 
+  it('discards both earlier account reads after switching Alice to Bob and back', async () => {
+    const { client } = fakeClient()
+    const { user } = await renderDesk(client)
+    server(() => sockets.latest().send(hello(0)))
+    await waitFor(() => expect(client.getOrders).toHaveBeenCalledTimes(2))
+
+    const oldAlice = deferred<OrderDto[]>()
+    const oldBob = deferred<OrderDto[]>()
+    client.getOrders.mockImplementationOnce(() => oldAlice.promise)
+    server(() => sockets.latest().send(changed(1, { affectedUserIds: ['alice'] })))
+    await waitFor(() => expect(client.getOrders).toHaveBeenCalledTimes(3))
+    client.getOrders.mockImplementationOnce(() => oldBob.promise)
+    await user.selectOptions(screen.getByLabelText('Demo account'), 'bob')
+    await user.selectOptions(screen.getByLabelText('Demo account'), 'alice')
+    await screen.findByText('No orders yet for Alice (demo).')
+
+    await act(async () => {
+      oldBob.resolve(partialFill.after['GET /api/v1/orders?userId=bob'].orders as OrderDto[])
+      oldAlice.resolve(noFill.after['GET /api/v1/orders?userId=alice'].orders as OrderDto[])
+    })
+    expect(screen.getByLabelText('Demo account')).toHaveValue('alice')
+    expect(screen.getByText('No orders yet for Alice (demo).')).toBeInTheDocument()
+    expect(screen.queryByRole('table', { name: /^Orders for/ })).not.toBeInTheDocument()
+    expect(sockets.sockets).toHaveLength(1)
+  })
+
+  it('discards a live book and executions read after the market changes', async () => {
+    const { client } = fakeClient()
+    const { user } = await renderDesk(client)
+    server(() => sockets.latest().send(hello(0)))
+    await waitFor(() => expect(client.getOrderBook).toHaveBeenCalledTimes(2))
+
+    const oldBook = deferred<BookSnapshotDto>()
+    const oldTrades = deferred<ExecutionDto[]>()
+    client.getOrderBook.mockImplementationOnce(() => oldBook.promise)
+    client.getExecutions.mockImplementationOnce(() => oldTrades.promise)
+    server(() => sockets.latest().send(changed(1)))
+    await waitFor(() => expect(client.getOrderBook).toHaveBeenCalledTimes(3))
+    await user.selectOptions(screen.getByLabelText('Market'), 'MSFT')
+    await screen.findByRole('heading', { name: 'Order book · MSFT' })
+
+    await act(async () => {
+      oldBook.resolve(partialFill.after['GET /api/v1/orderbook?symbol=AAPL'] as BookSnapshotDto)
+      oldTrades.resolve(partialFill.after['GET /api/v1/executions?symbol=AAPL'].executions as ExecutionDto[])
+    })
+    expect(screen.getByRole('heading', { name: 'Order book · MSFT' })).toBeInTheDocument()
+    expect(screen.getByText('No recent trades.')).toBeInTheDocument()
+    expect(screen.queryByText('Best bid: $190.50')).not.toBeInTheDocument()
+  })
+
   it('re-reads everything after a reconnect and after a missed event', async () => {
     const { client } = fakeClient()
     await renderDesk(client)

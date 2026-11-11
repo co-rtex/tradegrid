@@ -365,8 +365,9 @@ func checkError(t *testing.T, body any, code, field string) {
 func TestReadRoutesAreGetOnly(t *testing.T) {
 	srv := newExchangeServer(t, exchange.New(exchange.Config{}))
 
+	// /api/v1/orders also accepts POST; TestOrdersRouteMethods covers it.
 	paths := []string{
-		"/api/v1/symbols", "/api/v1/accounts", "/api/v1/orders",
+		"/api/v1/symbols", "/api/v1/accounts",
 		"/api/v1/orderbook", "/api/v1/executions",
 	}
 	for _, path := range paths {

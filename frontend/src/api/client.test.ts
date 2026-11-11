@@ -95,6 +95,53 @@ describe('createTradeGridClient GET requests', () => {
     expect(await rejection(client.getOrders('alice'))).toMatchObject({ kind: 'invalid-response', status: 200 })
   })
 
+  describe('rejects bodies that break the integer-cents contract', () => {
+    const after = partialFill.after
+    const bobOrders = after['GET /api/v1/orders?userId=bob'].orders
+    const trades = after['GET /api/v1/executions?symbol=AAPL'].executions
+    const accounts = after['GET /api/v1/accounts'].accounts
+    const book = after['GET /api/v1/orderbook?symbol=AAPL']
+
+    it('accepts the fixture bodies unchanged', async () => {
+      const { client } = setup((url) =>
+        jsonResponse(200, url.includes('/orders') ? { orders: bobOrders }
+          : url.includes('/executions') ? { executions: trades }
+          : url.includes('/orderbook') ? book : { accounts }))
+      expect(await client.getOrders('bob')).toEqual(bobOrders)
+      expect(await client.getExecutions('AAPL')).toEqual(trades)
+      expect(await client.getOrderBook('AAPL')).toEqual(book)
+      expect(await client.getAccounts()).toEqual(accounts)
+    })
+
+    it.each([
+      ['a fractional price', { price: 19050.5 }],
+      ['an unsafe quantity', { quantity: 2 ** 53 }],
+      ['remaining above quantity', { remaining: 26 }],
+      ['an unknown status', { status: 'OPEN' }],
+      ['a missing sequence', { sequence: undefined }],
+    ])('an order with %s', async (_name, change) => {
+      const { client } = setup(() => jsonResponse(200, { orders: [{ ...bobOrders[0], ...change }] }))
+      expect(await rejection(client.getOrders('bob'))).toMatchObject({ kind: 'invalid-response', status: 200 })
+    })
+
+    it('an execution with a string quantity', async () => {
+      const { client } = setup(() => jsonResponse(200, { executions: [{ ...trades[0], quantity: '10' }] }))
+      expect(await rejection(client.getExecutions('AAPL'))).toMatchObject({ kind: 'invalid-response' })
+    })
+
+    it('a book level with a fractional quantity', async () => {
+      const bids = [{ ...book.bids[0], quantity: 1.5 }]
+      const { client } = setup(() => jsonResponse(200, { ...book, bids }))
+      expect(await rejection(client.getOrderBook('AAPL'))).toMatchObject({ kind: 'invalid-response' })
+    })
+
+    it('a balance whose available is not total minus reserved', async () => {
+      const broken = [{ ...accounts[0], cash: { ...accounts[0].cash, available: accounts[0].cash.available + 1 } }]
+      const { client } = setup(() => jsonResponse(200, { accounts: broken }))
+      expect(await rejection(client.getAccounts())).toMatchObject({ kind: 'invalid-response' })
+    })
+  })
+
   it('rejects an error status whose JSON body is not the contracted error', async () => {
     const { client } = setup(() => jsonResponse(502, { message: 'bad gateway' }))
     expect(await rejection(client.getSymbols())).toMatchObject({ kind: 'invalid-response', status: 502, code: null })

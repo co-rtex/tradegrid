@@ -216,9 +216,10 @@ export default function TradingDesk({
 
   // The selected account's balances and orders: on mount and whenever the
   // app-level selection changes. Starting a load aborts the previous one, so
-  // the previous account's late responses are dropped.
+  // the previous account's late responses are dropped. Balances are cleared
+  // rather than kept, so the new account never shows an older snapshot.
   const loadAccount = useEffectEvent((id: string) => {
-    void loadAccounts((signal) => client.getAccounts({ signal }), { keepData: true })
+    void loadAccounts((signal) => client.getAccounts({ signal }), { keepData: false })
     void loadAccountOrders(id)
   })
   useEffect(() => {

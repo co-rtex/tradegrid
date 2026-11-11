@@ -135,12 +135,20 @@ function isArrayOfRecords(value: unknown): value is Record<string, unknown>[] {
   return Array.isArray(value) && value.every(isRecord)
 }
 
+/** A whole number of cents or shares the contract allows: a safe integer, at least `min`. */
+function isCount(value: unknown, min = 0): value is number {
+  return Number.isSafeInteger(value) && (value as number) >= min
+}
+
+const isText = (value: unknown): value is string => typeof value === 'string' && value !== ''
+
 function isBalance(value: unknown): value is BalanceDto {
   return (
     isRecord(value) &&
-    typeof value.total === 'number' &&
-    typeof value.reserved === 'number' &&
-    typeof value.available === 'number'
+    isCount(value.total) &&
+    isCount(value.reserved) &&
+    isCount(value.available) &&
+    value.available === (value.total as number) - (value.reserved as number)
   )
 }
 
@@ -168,9 +176,38 @@ const validateAccounts = collection<AccountDto>(
     a.positions.every((p) => isRecord(p) && typeof p.symbol === 'string' && isBalance(p)),
 )
 
+const ORDER_STATUSES: readonly unknown[] = ['NEW', 'PARTIALLY_FILLED', 'FILLED', 'CANCELED', 'REJECTED']
+
+// Every field the desk shows is checked, so a body that breaks the contract
+// becomes an `invalid-response` error instead of partly blank rows.
 const isOrder = (o: Record<string, unknown>) =>
-  typeof o.id === 'string' && typeof o.status === 'string' && typeof o.remaining === 'number'
-const isExecution = (e: Record<string, unknown>) => typeof e.id === 'string' && typeof e.price === 'number'
+  isText(o.id) &&
+  isText(o.userId) &&
+  isText(o.symbol) &&
+  (o.side === 'BUY' || o.side === 'SELL') &&
+  o.type === 'LIMIT' &&
+  isCount(o.price, 1) &&
+  isCount(o.quantity, 1) &&
+  isCount(o.remaining) &&
+  (o.remaining as number) <= (o.quantity as number) &&
+  ORDER_STATUSES.includes(o.status) &&
+  isCount(o.sequence, 1) &&
+  isText(o.createdAt) &&
+  isText(o.updatedAt)
+
+const isExecution = (e: Record<string, unknown>) =>
+  isText(e.id) &&
+  isCount(e.sequence, 1) &&
+  isText(e.executedAt) &&
+  isText(e.symbol) &&
+  isCount(e.price, 1) &&
+  isCount(e.quantity, 1) &&
+  isText(e.buyOrderId) &&
+  isText(e.sellOrderId) &&
+  isText(e.buyerUserId) &&
+  isText(e.sellerUserId)
+
+const isLevel = (l: Record<string, unknown>) => isCount(l.price, 1) && isCount(l.quantity, 1) && isCount(l.orderCount, 1)
 
 const validateOrders = collection<OrderDto>('orders', isOrder)
 const validateExecutions = collection<ExecutionDto>('executions', isExecution)
@@ -178,9 +215,11 @@ const validateExecutions = collection<ExecutionDto>('executions', isExecution)
 const validateBook: Validate<BookSnapshotDto> = (body) =>
   isRecord(body) &&
   typeof body.symbol === 'string' &&
-  typeof body.asOfSequence === 'number' &&
+  isCount(body.asOfSequence) &&
   isArrayOfRecords(body.bids) &&
-  isArrayOfRecords(body.asks)
+  body.bids.every(isLevel) &&
+  isArrayOfRecords(body.asks) &&
+  body.asks.every(isLevel)
     ? (body as unknown as BookSnapshotDto)
     : undefined
 

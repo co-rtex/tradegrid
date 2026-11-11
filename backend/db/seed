@@ -100,8 +100,10 @@ FILES=$(printf '%s' "$FILES" | LC_ALL=C sort)
 [ -n "$FILES" ] || die "no seed files in $SEEDS_DIR"
 
 # Every migration must be applied, and history must match the files.
-status=$("$ROOT/backend/db/migrate" status) ||
-	die "migrations need attention in ${DB:-default}; run backend/db/migrate status"
+if ! status=$("$ROOT/backend/db/migrate" status); then
+	printf '%s\n' "$status" >&2
+	die "migrations need attention in ${DB:-default}; see the status above"
+fi
 applied_count=0
 while IFS= read -r line; do
 	case $line in

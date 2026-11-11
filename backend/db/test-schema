@@ -528,6 +528,7 @@ violates accounts_pkey "INSERT INTO accounts (user_id, display_name, cash_total)
 violates accounts_user_id_check "INSERT INTO accounts (user_id, display_name, cash_total) VALUES ('', 'Nobody', 0)"
 violates accounts_user_id_check "INSERT INTO accounts (user_id, display_name, cash_total) VALUES ('$(printf 'u%.0s' $(seq 1 65))', 'Long', 0)"
 violates accounts_display_name_check "INSERT INTO accounts (user_id, display_name, cash_total) VALUES ('carol', '', 0)"
+violates accounts_display_name_check "INSERT INTO accounts (user_id, display_name, cash_total) VALUES ('carol', '$(printf 'n%.0s' $(seq 1 101))', 0)"
 # A negative total breaks both cash checks; PostgreSQL reports the first by name.
 violates 'accounts_cash_reserved_check|accounts_cash_total_check' "UPDATE accounts SET cash_total = -1 WHERE user_id = 'alice'"
 violates accounts_cash_total_check "UPDATE accounts SET cash_total = 9007199254740992 WHERE user_id = 'alice'"
@@ -541,8 +542,10 @@ rejects 'bigint out of range' "UPDATE accounts SET cash_total = 9223372036854775
 violates instruments_symbol_check "INSERT INTO instruments (symbol, name) VALUES ('aapl', 'Apple Inc.')"
 violates instruments_symbol_check "INSERT INTO instruments (symbol, name) VALUES ('BRK.B', 'Berkshire Hathaway')"
 violates instruments_symbol_check "INSERT INTO instruments (symbol, name) VALUES ('', 'Empty')"
+violates instruments_symbol_check "INSERT INTO instruments (symbol, name) VALUES ('ABCDEFGHIJKLMNOPQ', 'Seventeen letters')"
 violates instruments_pkey "INSERT INTO instruments (symbol, name) VALUES ('AAPL', 'Apple again')"
 violates instruments_name_check "INSERT INTO instruments (symbol, name) VALUES ('TSLA', '')"
+violates instruments_name_check "INSERT INTO instruments (symbol, name) VALUES ('TSLA', '$(printf 'n%.0s' $(seq 1 201))')"
 
 # positions
 violates positions_pkey "INSERT INTO positions (user_id, symbol, total) VALUES ('alice', 'AAPL', 1)"
@@ -604,9 +607,11 @@ violates executions_distinct_orders_check "$EXEC_INSERT ('exe-9', 9, $T9, 'AAPL'
 violates executions_pkey "$EXEC_INSERT ('exe-1', 9, $T9, 'AAPL', 19000, 5, 'ord-2', 'ord-1', 'bob', 'alice')"
 violates executions_sequence_key "$EXEC_INSERT ('exe-9', 1, $T9, 'AAPL', 19000, 5, 'ord-2', 'ord-1', 'bob', 'alice')"
 violates executions_execution_id_check "$EXEC_INSERT ('', 9, $T9, 'AAPL', 19000, 5, 'ord-2', 'ord-1', 'bob', 'alice')"
+violates executions_execution_id_check "$EXEC_INSERT ('$(printf 'e%.0s' $(seq 1 65))', 9, $T9, 'AAPL', 19000, 5, 'ord-2', 'ord-1', 'bob', 'alice')"
 violates executions_sequence_check "$EXEC_INSERT ('exe-9', 0, $T9, 'AAPL', 19000, 5, 'ord-2', 'ord-1', 'bob', 'alice')"
 violates executions_sequence_check "$EXEC_INSERT ('exe-9', 9007199254740992, $T9, 'AAPL', 19000, 5, 'ord-2', 'ord-1', 'bob', 'alice')"
 violates executions_price_check "$EXEC_INSERT ('exe-9', 9, $T9, 'AAPL', 0, 5, 'ord-2', 'ord-1', 'bob', 'alice')"
+violates executions_price_check "$EXEC_INSERT ('exe-9', 9, $T9, 'AAPL', -1, 5, 'ord-2', 'ord-1', 'bob', 'alice')"
 violates executions_price_check "$EXEC_INSERT ('exe-9', 9, $T9, 'AAPL', 100000001, 5, 'ord-2', 'ord-1', 'bob', 'alice')"
 violates executions_quantity_check "$EXEC_INSERT ('exe-9', 9, $T9, 'AAPL', 19000, 0, 'ord-2', 'ord-1', 'bob', 'alice')"
 violates executions_quantity_check "$EXEC_INSERT ('exe-9', 9, $T9, 'AAPL', 19000, -5, 'ord-2', 'ord-1', 'bob', 'alice')"

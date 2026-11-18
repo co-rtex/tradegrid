@@ -2,23 +2,25 @@
 
 This guide explains what a new contributor can run today and what Sprint 2
 behavior is defined by the contract and tested fixtures but is not yet wired
-into the running browser or HTTP server.
+into the running browser.
 
 ## What Works Today
 
-- The Go backend starts a local HTTP server with `GET /health` and the
-  read-only API routes, which show the seeded demo accounts, symbols, and an
-  empty exchange.
+- The Go backend starts a local HTTP server with `GET /health`, the read
+  API routes, which show the seeded demo accounts, symbols, and exchange
+  state, and order submission (`POST /api/v1/orders`).
 - The React frontend starts a local TradeGrid application shell.
 - PostgreSQL can run locally for migration-tool development.
 - The matching, account, risk, order, and execution packages have tests that
   verify the fixture scenarios in this guide.
 
-The browser TradingDesk and the order submission endpoint are not implemented
-yet. You can read the exchange's state through the running server, but you
-cannot submit a trade through the running browser or server at this time.
-The full-fill, partial-fill, and risk-rejection sections below are exact
-fixture and contract behavior, not a live demo procedure yet.
+The browser TradingDesk is not connected yet, so you cannot trade from the
+browser. You can submit orders to the running server with `curl` (see
+[Submit an order](../backend/README.md#submit-an-order)) and read the results
+through the read routes. The full-fill, partial-fill, and risk-rejection
+sections below are exact fixture and contract behavior. Replaying a fixture's
+setup and request against a freshly started server gives the same statuses,
+prices, quantities, and balances; generated IDs and timestamps differ.
 
 ## Prerequisites
 
@@ -124,11 +126,10 @@ database data.
 
 ## State and Reset Behavior
 
-The running backend holds one in-memory exchange, which the read routes
-expose. Until order submission is wired in, nothing changes that state, so it
-always matches the seed: the two demo accounts below, no orders, and no
-executions. When the server restarts, the exchange begins again from that
-seed. It has no runtime persistence or recovery. PostgreSQL is not connected
+The running backend holds one in-memory exchange. It starts from the seed:
+the two demo accounts below, no orders, and no executions. Each accepted
+`POST /api/v1/orders` changes that state, and the read routes show it. Only a
+server restart resets it: the exchange then begins again from the seed. It has no runtime persistence or recovery. PostgreSQL is not connected
 to that runtime.
 
 ## Demo Accounts and Symbols
@@ -147,8 +148,10 @@ tradable symbols are `AAPL` and `MSFT`.
 ## Fixture-Defined Trading Scenarios
 
 The scenarios below come from the shared contract and fixture tests. They are
-useful for understanding and testing the implementation, but cannot yet be
-replayed through the live HTTP server or browser.
+useful for understanding and testing the implementation. They can be
+replayed through the live HTTP server with `curl` (see the backend
+[README](../backend/README.md#submit-an-order)), but not yet through the
+browser.
 
 ### Full Fill with Price Improvement
 
@@ -198,7 +201,6 @@ accounts remain at the starting values above.
 
 The following work is not implemented in the live application yet:
 
-- Order submission over HTTP (`POST /api/v1/orders`).
 - Browser TradingDesk, demo-account selection, and order submission.
 - Manual Refresh; the planned UI must reload authoritative snapshots after an
   order or a user-requested refresh, without polling or WebSockets.

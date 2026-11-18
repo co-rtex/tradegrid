@@ -2,7 +2,7 @@
 
 This document defines the initial order-input validation rules for [issue #3](https://github.com/co-rtex/tradegrid/issues/3). It applies at the Orders boundary, before risk checks and matching.
 
-TradeGrid's current MVP supports **LIMIT** buy and sell orders. The backend does not yet expose an order-submission API or a serialized order model, so this document defines the logical order values that must be valid. It does not establish HTTP request field names, JSON types, error responses, or status codes.
+TradeGrid's current MVP supports **LIMIT** buy and sell orders. This document defines the logical order values that must be valid. The HTTP request field names, JSON types, error responses, and status codes of the order-submission API (`POST /api/v1/orders`) are defined in [api.md](api.md).
 
 ## Fields
 

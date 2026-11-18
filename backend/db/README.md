@@ -247,3 +247,84 @@ docker compose down --volumes
 ```
 
 This deletes the `tradegrid_postgres-data` volume and cannot be undone.
+
+## Trading schema and demo seeds
+
+The migrations in [`migrations/`](migrations/) implement the
+[#12](https://github.com/co-rtex/tradegrid/issues/12) design in
+[docs/database-schema.md](../../docs/database-schema.md), with its table,
+column, constraint, and index names. One file per table, in dependency order:
+
+| Migration                     | Creates                                                                                            |
+| ----------------------------- | -------------------------------------------------------------------------------------------------- |
+| `0001_create_accounts.sql`    | `accounts`: demo accounts with `cash_total` and `cash_reserved` in cents                           |
+| `0002_create_instruments.sql` | `instruments`: tradable symbols                                                                    |
+| `0003_create_positions.sql`   | `positions`: share `total` and `reserved` per account and symbol                                   |
+| `0004_create_orders.sql`      | `orders`: accepted orders, with status, original and remaining quantity, and acceptance `sequence` |
+| `0005_create_executions.sql`  | `executions`: trades naming both orders and both accounts, with execution `sequence`               |
+
+The design document explains every rule. In short: money is whole cents and
+quantities are whole shares, both `bigint` with the bounds from
+[docs/api.md](../../docs/api.md#numeric-bounds); every column is `NOT NULL`;
+status and remaining quantity must agree; executions reference
+`orders (order_id, user_id, symbol)` with composite foreign keys, so a buyer or
+seller must own the order named; and history never cascades.
+
+### Seeding
+
+[`seeds/`](seeds/) holds the demo data from
+[Demo Accounts and Symbols](../../docs/api.md#demo-accounts-and-symbols):
+`alice` and `bob` with `10000000` cents and 100 AAPL and 100 MSFT each, the
+symbols AAPL and MSFT, and no orders or executions. Load it after migrating:
+
+```bash
+backend/db/migrate up
+backend/db/seed
+```
+
+`seed` refuses to run unless `migrate status` reports every migration as
+applied. It runs all seed files in one transaction, so a failure changes
+nothing. Seeds insert with `ON CONFLICT DO NOTHING`, so running `seed` again
+is always safe: it adds no rows, never adds to a balance, and never resets a
+balance that has changed since. To start from a clean seed, use a new test
+database, or [reset your development database](#resetting-your-development-database).
+`seed` takes `TRADEGRID_DB_NAME` like `migrate`, and `TRADEGRID_SEEDS_DIR`
+points it at another directory. Seed files are named and written like
+migration files: plain SQL with no transaction control or `psql` metacommands.
+
+### Testing the schema and seeds
+
+```bash
+backend/db/test-schema
+```
+
+Like `test-migrate`, it starts the container if needed and works only in a
+disposable database with a unique name (`tg_schema_<pid>_<random>_test`),
+which it drops on exit, including after Ctrl-C. It never touches `tradegrid`.
+It applies the real migrations and seeds and checks that:
+
+- an empty database migrates and records versions `0001` to `0005` with their
+  checksums, and the columns, constraints, and indexes match the design;
+- invalid references, negative and out-of-bound values, impossible
+  status/remaining combinations, duplicate keys and sequences, and executions
+  whose buyer or seller does not own the order are each rejected by the named
+  constraint, and leave the database unchanged;
+- running `seed` again leaves an identical `pg_dump`, and a failing seed
+  changes nothing;
+- the design's examples load and pass validation queries V1 to V8. It prints
+  the sample queries: a partial fill with both counterparties, an account's
+  orders newest first, and execution history ordered by `sequence` even when
+  timestamps tie.
+
+To run it, or `test-migrate`, on a separate throwaway server instead of your
+development container, give Compose another project name and a free port,
+then remove that project and its volume afterwards:
+
+```bash
+export COMPOSE_PROJECT_NAME=tradegrid_scratch TRADEGRID_DB_PORT=55432
+backend/db/test-schema
+docker compose down --volumes
+unset COMPOSE_PROJECT_NAME TRADEGRID_DB_PORT
+```
+
+CI seeds the database and runs this script in the `database` job.

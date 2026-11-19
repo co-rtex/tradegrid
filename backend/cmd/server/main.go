@@ -19,6 +19,7 @@ import (
 
 	"github.com/co-rtex/tradegrid/backend/internal/exchange"
 	"github.com/co-rtex/tradegrid/backend/internal/httpapi"
+	"github.com/co-rtex/tradegrid/backend/internal/realtime"
 )
 
 const (
@@ -56,8 +57,12 @@ func run(ctx context.Context) error {
 	}
 	log.Printf("TradeGrid backend listening on http://%s (press Ctrl-C to stop)", ln.Addr())
 	// One exchange per process: restarting the server resets it to the
-	// seeded demo state (docs/api.md).
-	return serve(ctx, ln, httpapi.NewRouter(exchange.New(exchange.Config{})))
+	// seeded demo state (docs/api.md). Its hub receives one event per
+	// committed submission, which the stream endpoint fans out (#72, #73).
+	hub := realtime.New(realtime.DefaultQueueSize)
+	stream := httpapi.NewStream(httpapi.StreamConfig{Hub: hub})
+	svc := exchange.New(exchange.Config{Events: hub})
+	return serve(ctx, ln, httpapi.NewRouter(svc, httpapi.WithStream(stream)), stream.Close)
 }
 
 // listenPort returns the port from TRADEGRID_HTTP_PORT, or the default when
@@ -77,7 +82,10 @@ func listenPort() (string, error) {
 // serve handles requests on ln until ctx is canceled, then shuts down
 // gracefully: it stops accepting connections and waits up to shutdownTimeout
 // for in-flight requests to finish. It closes ln before returning.
-func serve(ctx context.Context, ln net.Listener, handler http.Handler) error {
+//
+// closers run first, within the same timeout, for connections that
+// http.Server.Shutdown does not close itself, such as WebSockets.
+func serve(ctx context.Context, ln net.Listener, handler http.Handler, closers ...func(context.Context) error) error {
 	srv := &http.Server{
 		Handler: handler,
 		// Drop clients that open a connection but are slow to send headers.
@@ -97,6 +105,11 @@ func serve(ctx context.Context, ln net.Listener, handler http.Handler) error {
 	log.Print("TradeGrid backend shutting down")
 	shutdownCtx, cancel := context.WithTimeout(context.Background(), shutdownTimeout)
 	defer cancel()
+	for _, closeConns := range closers {
+		if err := closeConns(shutdownCtx); err != nil {
+			log.Printf("TradeGrid backend: %v", err)
+		}
+	}
 	if err := srv.Shutdown(shutdownCtx); err != nil {
 		return fmt.Errorf("shutdown: %w", err)
 	}

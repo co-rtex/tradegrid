@@ -1,0 +1,35 @@
+.demo-account-select {
+  /* Visual-system tokens (docs/visual-system.md), local like other components. */
+  --border: #334155;
+  --text: #f8fafc;
+  --accent-hover: #67e8f9;
+
+  display: grid;
+  flex: 1 1 12rem;
+  gap: 8px;
+  min-width: 0;
+  font-size: 14px;
+  font-weight: 600;
+}
+
+.demo-account-select select {
+  width: 100%;
+  min-height: 44px;
+  padding: 10px 12px;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  background-color: #0b1120;
+  color: var(--text);
+  font: inherit;
+  font-weight: 400;
+}
+
+.demo-account-select select:focus-visible {
+  outline: 2px solid var(--accent-hover);
+  outline-offset: 2px;
+}
+
+.demo-account-select select:disabled {
+  cursor: not-allowed;
+  opacity: 0.6;
+}

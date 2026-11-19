@@ -1,0 +1,77 @@
+{
+  "description": "SYNTHETIC data for analytics/trade_activity.py, not captured from a running server. Six executions across AAPL and MSFT for the seeded alice/bob accounts, newest first like GET /api/v1/executions. Alice's sell ord-1 (25 AAPL at $190.00) fills in three separate executions (exe-1, exe-3, exe-6); bob's buy ord-4 sweeps two price levels (exe-2, exe-3); exe-6 is a same-account trade (alice buys from her own resting sell). See analytics/README.md for the expected report.",
+  "executions": [
+    {
+      "id": "exe-6",
+      "sequence": 6,
+      "executedAt": "2026-10-20T15:00:09Z",
+      "symbol": "AAPL",
+      "price": 19000,
+      "quantity": 2,
+      "buyOrderId": "ord-9",
+      "sellOrderId": "ord-1",
+      "buyerUserId": "alice",
+      "sellerUserId": "alice"
+    },
+    {
+      "id": "exe-5",
+      "sequence": 5,
+      "executedAt": "2026-10-20T15:00:08Z",
+      "symbol": "MSFT",
+      "price": 41015,
+      "quantity": 4,
+      "buyOrderId": "ord-8",
+      "sellOrderId": "ord-7",
+      "buyerUserId": "alice",
+      "sellerUserId": "bob"
+    },
+    {
+      "id": "exe-4",
+      "sequence": 4,
+      "executedAt": "2026-10-20T15:00:06Z",
+      "symbol": "MSFT",
+      "price": 41000,
+      "quantity": 3,
+      "buyOrderId": "ord-6",
+      "sellOrderId": "ord-5",
+      "buyerUserId": "alice",
+      "sellerUserId": "bob"
+    },
+    {
+      "id": "exe-3",
+      "sequence": 3,
+      "executedAt": "2026-10-20T15:00:04Z",
+      "symbol": "AAPL",
+      "price": 19000,
+      "quantity": 7,
+      "buyOrderId": "ord-4",
+      "sellOrderId": "ord-1",
+      "buyerUserId": "bob",
+      "sellerUserId": "alice"
+    },
+    {
+      "id": "exe-2",
+      "sequence": 2,
+      "executedAt": "2026-10-20T15:00:04Z",
+      "symbol": "AAPL",
+      "price": 18950,
+      "quantity": 5,
+      "buyOrderId": "ord-4",
+      "sellOrderId": "ord-3",
+      "buyerUserId": "bob",
+      "sellerUserId": "alice"
+    },
+    {
+      "id": "exe-1",
+      "sequence": 1,
+      "executedAt": "2026-10-20T15:00:02Z",
+      "symbol": "AAPL",
+      "price": 19000,
+      "quantity": 10,
+      "buyOrderId": "ord-2",
+      "sellOrderId": "ord-1",
+      "buyerUserId": "bob",
+      "sellerUserId": "alice"
+    }
+  ]
+}

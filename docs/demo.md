@@ -14,11 +14,13 @@ into the running browser.
 - The matching, account, risk, order, and execution packages have tests that
   verify the fixture scenarios in this guide.
 
-The browser TradingDesk and the order submission endpoint are not implemented
-yet. You can read the exchange's state through the running server, but you
-cannot submit a trade through the running browser or server at this time.
-The full-fill, partial-fill, and risk-rejection sections below are exact
-fixture and contract behavior, not a live demo procedure yet.
+The browser TradingDesk is not connected yet, so you cannot trade from the
+browser. You can submit orders to the running server with `curl` (see
+[Submit an order](../backend/README.md#submit-an-order)) and read the results
+through the read routes. The full-fill, partial-fill, and risk-rejection
+sections below are exact fixture and contract behavior. Replaying a fixture's
+setup and request against a freshly started server gives the same statuses,
+prices, quantities, and balances; generated IDs and timestamps differ.
 
 ## Prerequisites
 
@@ -124,11 +126,10 @@ database data.
 
 ## State and Reset Behavior
 
-The running backend holds one in-memory exchange, which the read routes
-expose. Until order submission is wired in, nothing changes that state, so it
-always matches the seed: the two demo accounts below, no orders, and no
-executions. When the server restarts, the exchange begins again from that
-seed. It has no runtime persistence or recovery. PostgreSQL is not connected
+The running backend holds one in-memory exchange. It starts from the seed:
+the two demo accounts below, no orders, and no executions. Each accepted
+`POST /api/v1/orders` changes that state, and the read routes show it. Only a
+server restart resets it: the exchange then begins again from the seed. It has no runtime persistence or recovery. PostgreSQL is not connected
 to that runtime.
 
 ## Demo Accounts and Symbols

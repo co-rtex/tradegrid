@@ -97,7 +97,13 @@ curl -i http://127.0.0.1:8080/api/v1/accounts
 curl -i "http://127.0.0.1:8080/api/v1/orders?userId=alice"
 curl -i "http://127.0.0.1:8080/api/v1/orderbook?symbol=AAPL"
 curl -i "http://127.0.0.1:8080/api/v1/executions?symbol=AAPL&userId=bob"
+curl -i "http://127.0.0.1:8080/api/v1/portfolio?userId=alice"
 ```
+
+`/api/v1/portfolio` (`internal/httpapi/portfolio_handlers.go`) values one
+account's positions at the fixed simulated reference prices, with cost basis
+and realized and unrealized P&L, as specified in
+[docs/portfolio.md](../docs/portfolio.md).
 
 The handlers are in `internal/httpapi/read_handlers.go`. Invalid queries get
 the contract's JSON error body, for example `400 INVALID_QUERY` for a missing

@@ -2,8 +2,9 @@
 // it to order acceptance and settlement, as specified in docs/api.md
 // ("Demo Accounts and Symbols" and "Reservations and Settlement").
 //
-// The arithmetic lives in package risk; this package owns the account set,
-// looks accounts up by user ID, turns orders and execution records into risk
+// The arithmetic lives in package risk, and the cost-basis arithmetic in
+// package portfolio; this package owns the account set, looks accounts up by
+// user ID, turns orders and execution records into risk and cost-basis
 // inputs, and exports copied snapshots.
 //
 // A Ledger is a plain value with no lock of its own. The exchange service
@@ -48,6 +49,9 @@ type Ledger struct {
 	userIDs  []string
 	names    map[string]string
 	balances map[string]risk.Account
+	// lots is each account's cost basis and realized P&L per symbol
+	// (lots.go). Settle changes it together with balances.
+	lots lotBook
 }
 
 // Clone returns an independent copy of l. Changes to the copy never affect l.
@@ -56,7 +60,7 @@ func (l *Ledger) Clone() *Ledger {
 	for id, a := range l.balances {
 		balances[id] = a.Clone()
 	}
-	return &Ledger{userIDs: l.userIDs, names: l.names, balances: balances}
+	return &Ledger{userIDs: l.userIDs, names: l.names, balances: balances, lots: l.lots.clone()}
 }
 
 // Has reports whether userID is a demo account.
@@ -101,10 +105,15 @@ func (l *Ledger) Reserve(o orders.Order) error {
 // the buy order's limit, and the seller's share reservation is released.
 // Same-account records net to zero totals and release both reservations.
 //
+// In the same step, each record updates the buyer's and seller's cost basis
+// and realized P&L at the execution price, in record order, under average
+// cost (docs/portfolio.md). Same-account records change neither.
+//
 // canonical holds the orders by ID; it must contain both orders of every
 // record. Settle reports ErrInconsistent when a record disagrees with its
-// orders, and wraps risk errors, including risk.ErrLimitExceeded when a total
-// would pass its bound. On error l is unchanged.
+// orders or the cost basis cannot be updated, and wraps risk errors,
+// including risk.ErrLimitExceeded when a total would pass its bound. On
+// error l is unchanged: neither balances nor cost basis change.
 func (l *Ledger) Settle(records []executions.Record, canonical map[string]orders.Order) error {
 	if len(records) == 0 {
 		return nil
@@ -136,7 +145,15 @@ func (l *Ledger) Settle(records []executions.Record, canonical map[string]orders
 	if err != nil {
 		return err
 	}
-	l.balances = settled
+	lots, err := l.lots.applyLots(records)
+	if err != nil {
+		return err
+	}
+	next := &Ledger{userIDs: l.userIDs, names: l.names, balances: settled, lots: lots}
+	if err := next.checkLots(next.userIDs); err != nil {
+		return err
+	}
+	l.balances, l.lots = settled, lots
 	return nil
 }
 
@@ -157,7 +174,8 @@ func counterparty(canonical map[string]orders.Order, id string, side orders.Side
 // still need: for each account, reserved cash is the sum of price ×
 // remaining over its open BUY orders, and reserved shares of a symbol are the
 // sum of remaining over its open SELL orders. Orders that are not open are
-// ignored. It reports ErrInconsistent on any difference.
+// ignored. It also checks every account's cost-basis lots (lots.go). It
+// reports ErrInconsistent on any difference.
 //
 // Reconcile is meant for tests and debug assertions; it is linear in the
 // number of orders.
@@ -211,7 +229,7 @@ func (l *Ledger) Reconcile(all []orders.Order) error {
 			}
 		}
 	}
-	return nil
+	return l.checkLots(l.userIDs)
 }
 
 // mulAdd returns sum + a×b for nonnegative sum, a, and b, and false when the

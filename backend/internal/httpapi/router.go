@@ -43,6 +43,9 @@ func NewRouter(svc *exchange.Service) http.Handler {
 	handleAPI(mux, "/api/v1/orderbook", methods{http.MethodGet: handleOrderBook(svc)})
 	handleAPI(mux, "/api/v1/executions", methods{http.MethodGet: handleExecutions(svc)})
 
+	// Portfolio read (#69), in portfolio_handlers.go.
+	handleAPI(mux, "/api/v1/portfolio", methods{http.MethodGet: handlePortfolio(svc)})
+
 	// Any other path under /api/, with any method, is NOT_FOUND. "/api" is
 	// listed too so the mux does not redirect it to "/api/".
 	mux.HandleFunc("/api", handleAPINotFound)

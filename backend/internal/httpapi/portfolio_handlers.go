@@ -15,6 +15,11 @@ import (
 // with the pure portfolio calculator at the catalog's fixed reference prices.
 // It computes nothing itself and changes nothing.
 func handlePortfolio(svc *exchange.Service) http.HandlerFunc {
+	return portfolioWithPrices(svc, referencePrices)
+}
+
+// portfolioWithPrices also lets tests verify the response to a missing mark.
+func portfolioWithPrices(svc *exchange.Service, prices func() map[string]int64) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		q, err := url.ParseQuery(r.URL.RawQuery)
 		if err != nil {
@@ -27,7 +32,7 @@ func handlePortfolio(svc *exchange.Service) http.HandlerFunc {
 			writeError(w, err)
 			return
 		}
-		valuation, err := portfolio.Value(toValuationInput(view), referencePrices())
+		valuation, err := portfolio.Value(toValuationInput(view), prices())
 		if err != nil {
 			// A missing reference price, an overflow, or a broken invariant
 			// is a server bug: INTERNAL, logged, and nothing changes.

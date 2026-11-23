@@ -127,6 +127,11 @@ func (l *Ledger) Portfolio(userID string) (PortfolioSnapshot, error) {
 	if !ok {
 		return PortfolioSnapshot{}, fmt.Errorf("%w: %q", ErrUnknownUser, userID)
 	}
+	// A missing lot for a closed position must not silently become a zero
+	// lot: that could erase realized P&L from an otherwise valid snapshot.
+	if err := l.checkLots([]string{userID}); err != nil {
+		return PortfolioSnapshot{}, err
+	}
 	lots := l.lots[userID]
 	holdings := make([]Holding, 0, len(a.Positions))
 	for _, symbol := range slices.Sorted(maps.Keys(a.Positions)) {

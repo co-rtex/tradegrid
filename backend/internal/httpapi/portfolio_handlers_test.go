@@ -3,6 +3,7 @@ package httpapi
 import (
 	"encoding/json"
 	"net/http"
+	"net/http/httptest"
 	"reflect"
 	"strings"
 	"testing"
@@ -65,6 +66,40 @@ func TestPortfolioMatchesContractExample(t *testing.T) {
 	if totals["unrealizedPnl"] != 5000.0 || totals["realizedPnl"] != 0.0 || totals["equity"] != 16105000.0 {
 		t.Errorf("bob totals = %v", totals)
 	}
+}
+
+// Submit through HTTP too, so the POST and portfolio routes share the same
+// exchange and expose a consistent committed trade to API clients.
+func TestPortfolioAfterHTTPTrade(t *testing.T) {
+	srv := newExchangeServer(t, exchange.New(fixtureConfig()))
+	for _, body := range []string{
+		orderBody("alice", "AAPL", "SELL", 18500, 10),
+		orderBody("bob", "AAPL", "BUY", 19500, 10),
+	} {
+		resp, result := postJSON(t, srv.URL, body)
+		if resp.StatusCode != http.StatusCreated {
+			t.Fatalf("POST status %d: %v", resp.StatusCode, result)
+		}
+	}
+	status, got := getJSON(t, srv.URL+"/api/v1/portfolio?userId=alice")
+	if status != http.StatusOK || !reflect.DeepEqual(got, decode(t, docExample)) {
+		t.Fatalf("GET status %d, body %v; want contract example", status, got)
+	}
+}
+
+func TestPortfolioMissingReferencePriceReturnsInternal(t *testing.T) {
+	svc := exchange.New(exchange.Config{})
+	req := httptest.NewRequest(http.MethodGet, "/api/v1/portfolio?userId=alice", nil)
+	w := httptest.NewRecorder()
+	portfolioWithPrices(svc, func() map[string]int64 { return map[string]int64{"MSFT": 42000} })(w, req)
+	if w.Code != http.StatusInternalServerError {
+		t.Fatalf("status %d, want 500; body %s", w.Code, w.Body.String())
+	}
+	var body any
+	if err := json.Unmarshal(w.Body.Bytes(), &body); err != nil {
+		t.Fatal(err)
+	}
+	checkError(t, body, "INTERNAL", "")
 }
 
 // A fresh account is valued at its seeded basis: zero P&L and equity

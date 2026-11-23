@@ -7,6 +7,7 @@ import (
 
 	"github.com/co-rtex/tradegrid/backend/internal/executions"
 	"github.com/co-rtex/tradegrid/backend/internal/portfolio"
+	"github.com/co-rtex/tradegrid/backend/internal/risk"
 )
 
 func lotOf(t *testing.T, l *Ledger, userID, symbol string) portfolio.Lot {
@@ -175,6 +176,18 @@ func TestPortfolioSnapshot(t *testing.T) {
 	}
 	if _, err := l.Portfolio("carol"); !errors.Is(err, ErrUnknownUser) {
 		t.Errorf("Portfolio(carol) = %v, want ErrUnknownUser", err)
+	}
+}
+
+// A missing zero-share lot could otherwise look valid while hiding realized P&L.
+func TestPortfolioRejectsMissingClosedPositionBasis(t *testing.T) {
+	l := Seed()
+	a := l.balances["alice"]
+	a.Positions["AAPL"] = risk.Balance{}
+	l.balances["alice"] = a
+	delete(l.lots["alice"], "AAPL")
+	if _, err := l.Portfolio("alice"); !errors.Is(err, ErrInconsistent) {
+		t.Fatalf("Portfolio with missing lot = %v, want ErrInconsistent", err)
 	}
 }
 

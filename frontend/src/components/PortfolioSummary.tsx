@@ -16,6 +16,7 @@ function PortfolioSummary() {
   return (
     <section className="portfolio-summary" aria-label="Portfolio summary">
       <h2 className="portfolio-heading">Portfolio</h2>
+      <p className="portfolio-example-notice">Example data — not connected to your account.</p>
 
       <div className="portfolio-total">
         <div>

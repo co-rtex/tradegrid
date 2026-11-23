@@ -4,6 +4,12 @@ import { describe, expect, it } from 'vitest'
 import App from './App'
 
 describe('App', () => {
+  it('identifies the portfolio figures as example data', () => {
+    render(<App />)
+    const portfolio = screen.getByRole('region', { name: 'Portfolio summary' })
+    expect(within(portfolio).getByText('Example data — not connected to your account.')).toBeVisible()
+  })
+
   it('starts on Dashboard and follows navigation clicks', async () => {
     const user = userEvent.setup()
     render(<App />)

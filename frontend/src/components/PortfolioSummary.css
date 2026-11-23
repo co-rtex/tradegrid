@@ -10,10 +10,16 @@
 }
 
 .portfolio-heading {
-  margin: 0 0 2rem;
+  margin: 0 0 0.5rem;
   color: #f8fafc;
   font-size: 1.75rem;
   line-height: 1.2;
+}
+
+.portfolio-example-notice {
+  margin: 0 0 2rem;
+  color: #cbd5e1;
+  font-size: 0.875rem;
 }
 
 .portfolio-total {

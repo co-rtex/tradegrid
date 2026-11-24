@@ -21,12 +21,24 @@ interface Window {
 /** A separate browser window (its own context and storage) showing one account's desk. */
 async function openDesk(browser: Browser, user: User): Promise<Window> {
   const context = await browser.newContext()
-  const page = await context.newPage()
-  await page.goto('/')
-  await page.getByLabel('Demo account').selectOption(user)
-  await expect(page.getByRole('heading', { name: `Orders for ${names[user]}` })).toBeVisible()
-  await expect(liveState(page)).toHaveText('Connected')
-  return { context, page }
+
+  try {
+    const page = await context.newPage()
+    await page.goto('/')
+    await page.getByLabel('Demo account').selectOption(user)
+
+    await expect(
+      page.getByRole('heading', { name: `Orders for ${names[user]}` }),
+    ).toBeVisible()
+
+    await expect(liveState(page)).toHaveText('Connected')
+
+    return { context, page }
+  } catch (error) {
+    // Close the context if browser initialization fails.
+    await context.close()
+    throw error
+  }
 }
 
 const liveState = (page: Page) => page.getByText('Live updates:').locator('strong')
@@ -124,15 +136,71 @@ test('a partial fill keeps the remainder and its reservation, and a risk rejecti
 
   // Bob tries to buy 600 @ $200.00 = $120,000.00 with $93,342.50 available.
   const ordersBefore = await bobOrders.getByRole('row').count()
+
+  const aliceOrders = alice.page.getByRole('table', {
+    name: `Orders for ${names.alice}`,
+  })
+
+  const aliceOrdersBefore = await aliceOrders.getByRole('row').count()
+
+  const executions = bob.page.getByRole('table', {
+    name: 'Recent executions · newest first',
+  })
+
+  const executionsBefore = await executions.getByRole('row').allTextContents()
+
   await placeOrder(bob.page, 'BUY', '600', '200.00')
-  const form = bob.page.getByRole('form', { name: 'Place a limit order' })
+
+  const form = bob.page.getByRole('form', {
+    name: 'Place a limit order',
+  })
+
   await expect(form.getByRole('alert')).toContainText('INSUFFICIENT_CASH')
   await expect(form.getByRole('alert')).toContainText('No order was created')
-  await bob.page.getByRole('button', { name: 'Refresh' }).click()
-  await expect(bob.page.getByText('Refreshing from the server…')).toBeHidden()
+
+  // Refresh both accounts to verify authoritative server state.
+  for (const { page } of [alice, bob]) {
+    await page.getByRole('button', { name: 'Refresh' }).click()
+    await expect(page.getByText('Refreshing from the server…')).toBeHidden()
+  }
+
+  // Verify Bob's cash balances remain unchanged.
   await expect(cash(bob.page, 'bob', 'Cash available')).toHaveText('$93,342.50')
   await expect(cash(bob.page, 'bob', 'Cash reserved')).toHaveText('$2,857.50')
+  await expect(cash(bob.page, 'bob', 'Cash total')).toHaveText('$96,200.00')
+
+  // Verify Alice's cash balances remain unchanged.
+  await expect(cash(alice.page, 'alice', 'Cash available')).toHaveText('$103,800.00')
+  await expect(cash(alice.page, 'alice', 'Cash reserved')).toHaveText('$0.00')
+  await expect(cash(alice.page, 'alice', 'Cash total')).toHaveText('$103,800.00')
+
+  // Verify neither account's AAPL holdings changed.
+  await expect(sharesRow(alice.page, 'alice', 'AAPL')).toHaveText(
+    /AAPL\s*80 shares\s*0 shares\s*80 shares/,
+  )
+
+  await expect(sharesRow(bob.page, 'bob', 'AAPL')).toHaveText(
+    /AAPL\s*120 shares\s*0 shares\s*120 shares/,
+  )
+
+  // Verify no additional orders or executions were created.
   await expect(bobOrders.getByRole('row')).toHaveCount(ordersBefore)
+  await expect(aliceOrders.getByRole('row')).toHaveCount(aliceOrdersBefore)
+
+  // Verify both windows retain the existing order book and execution history.
+  for (const { page } of [alice, bob]) {
+    await expect(page.getByText('Best bid: $190.50')).toBeVisible()
+
+    await expect(
+      page.getByRole('table', { name: 'AAPL BUY / BID price levels' })
+        .getByRole('row').nth(1),
+    ).toHaveText(/\$190\.50\s*15 shares\s*1/)
+
+    await expect(
+      page.getByRole('table', { name: 'Recent executions · newest first' })
+        .getByRole('row'),
+    ).toHaveText(executionsBefore)
+  }
 })
 
 test('both portfolios update live after a cross-account fill at a price away from the reference', async ({ request }) => {

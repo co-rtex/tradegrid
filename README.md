@@ -89,3 +89,9 @@ See the [Developer Setup and Demo Guide](docs/demo.md) to start the current
 backend health server, frontend application shell, and optional PostgreSQL
 migration foundation. It also distinguishes tested fixture behavior from the
 live features that are not yet integrated.
+
+## Browser Smoke Tests
+
+See the [Browser Smoke-Test Guide](docs/browser-smoke-tests.md)
+for installation, execution, test scenarios, CI configuration,
+and independent verification evidence for issue #97.
